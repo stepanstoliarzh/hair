@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>HairRate</title>
+  <meta name="description" content="HairRate — каталог причесок с оценками и рецензиями.">
+  <script>
+    // Тема применяется до отрисовки, чтобы не было вспышки светлого фона
+    try {
+      const savedTheme = localStorage.getItem("hairrate_theme");
+      if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
+    } catch (error) { /* хранилище недоступно — берём системную тему */ }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <section class="app">
+      <header class="header">
+        <div>
+          <span class="eyebrow">HAIRRATE</span>
+          <h1>Прически</h1>
+          <p class="header-subtitle">Добавляйте образы, пишите рецензии и оценивайте их.</p>
+        </div>
+        <div class="header-actions">
+          <a class="me-chip hidden" id="meChip" href="#/me" title="Мой профиль">
+            <span class="avatar size-xs" id="meAvatar"></span><span id="meName"></span>
+          </a>
+          <button class="ghost-button" id="loginButton" type="button">Войти</button>
+          <button class="icon-button" id="themeButton" type="button" aria-label="Включить тёмную тему" title="Тема">
+            <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
+            <svg id="themeIconSun" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
+          </button>
+          <button class="add-button" id="openCreateButton" type="button">
+            <span>＋</span> Добавить прическу
+          </button>
+        </div>
+      </header>
+
+      <nav class="main-nav" id="mainNav" aria-label="Разделы">
+        <a href="#/" data-nav="catalog">Каталог</a>
+        <a href="#/top" data-nav="top">Топ</a>
+        <a href="#/reviews" data-nav="reviews">Рецензии</a>
+        <a href="#/users" data-nav="users">Участники</a>
+        <a href="#/compare" data-nav="compare">Сравнить</a>
+      </nav>
+
+      <!-- ===== Каталог ===== -->
+      <section class="catalog-view" id="catalogView">
+        <div id="heroBlock" class="hidden"></div>
+
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">КАТАЛОГ</span>
+            <h2>Все прически</h2>
+          </div>
+          <span class="catalog-count" id="catalogCount"></span>
+        </div>
+
+        <div class="catalog-toolbar hidden" id="catalogToolbar">
+          <label class="search-field">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" placeholder="Поиск по названию, описанию и тегам" autocomplete="off" aria-label="Поиск причесок">
+          </label>
+          <div class="sort-tabs" id="sortTabs" aria-label="Сортировка">
+            <button type="button" data-sort="new" class="active">Новые</button>
+            <button type="button" data-sort="top">Лучшие</button>
+            <button type="button" data-sort="popular">Популярные</button>
+            <button type="button" data-sort="unrated">Без оценки</button>
+          </div>
+        </div>
+
+        <div class="tag-filter hidden" id="tagFilter"></div>
+
+        <div class="hair-grid" id="hairGrid">
+          <div class="loading-state"><span class="spinner" aria-hidden="true"></span>Загружаем каталог…</div>
+        </div>
+      </section>
+
+      <!-- ===== Прическа ===== -->
+      <section class="detail-view hidden" id="detailView">
+        <button class="back-button" id="backButton" type="button">← Назад</button>
+
+        <div class="detail-layout">
+          <div class="detail-media">
+            <div class="detail-photo" id="detailPhoto" title="Открыть на весь экран">
+              <img id="detailImage" alt="Фотография прически">
+              <button type="button" class="detail-zoom" id="detailZoom" aria-label="Открыть фото на весь экран">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>
+              </button>
+            </div>
+            <div class="detail-gallery hidden" id="detailGallery" aria-label="Фотографии прически"></div>
+          </div>
+
+          <div class="detail-info">
+            <div class="detail-title-row">
+              <div>
+                <span class="eyebrow">ПРИЧЕСКА</span>
+                <h2 id="detailTitle"></h2>
+              </div>
+              <div class="detail-tools">
+                <button class="text-button" id="shareHairButton" type="button" title="Сохранить карточку с оценкой как картинку">Картинка</button>
+                <button class="text-button" id="compareHairButton" type="button">Сравнить</button>
+                <button class="text-button hidden" id="editHairButton" type="button">Изменить</button>
+                <button class="text-button danger hidden" id="deleteHairButton" type="button">Удалить</button>
+              </div>
+            </div>
+            <p class="detail-owner" id="detailOwner"></p>
+            <div class="tag-list" id="detailTags"></div>
+            <p class="detail-description" id="detailDescription"></p>
+
+            <div class="detail-score" id="detailScore"></div>
+
+            <div class="criteria hidden" id="detailCriteria"></div>
+
+            <div class="detail-actions" id="detailActions">
+              <button class="primary-button" id="openRatingButton" type="button">Оценить прическу</button>
+              <button class="secondary-button" id="openReviewButton" type="button">Написать рецензию и оценить</button>
+            </div>
+
+            <div class="reviews-section">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">МНЕНИЯ</span>
+                  <h3>Рецензии</h3>
+                </div>
+                <span id="reviewCount"></span>
+              </div>
+              <div id="reviewsList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Добавление / редактирование ===== -->
+      <section class="create-view hidden" id="createView">
+        <button class="back-button" id="cancelCreateButton" type="button">← Назад</button>
+
+        <div class="form-card">
+          <span class="eyebrow" id="createEyebrow">НОВАЯ ПРИЧЕСКА</span>
+          <h2 id="createHeading">Добавить прическу</h2>
+          <p class="form-intro" id="createIntro">Карточка появится в общем каталоге, оценивать её смогут все участники.</p>
+
+          <form id="createForm">
+            <label class="field">
+              <span>Название</span>
+              <input id="newTitle" type="text" maxlength="60" placeholder="Например, Textured Crop" required>
+            </label>
+
+            <label class="field">
+              <span>Описание <em>(необязательно)</em></span>
+              <textarea id="newDescription" maxlength="240" rows="4" placeholder="Коротко расскажите о прическе"></textarea>
+            </label>
+
+            <div class="field">
+              <span>Теги <em>(необязательно, до 6)</em></span>
+              <div class="tag-picker" id="tagPicker"></div>
+              <div class="tag-add">
+                <input id="newTagInput" class="text-input" type="text" maxlength="24" placeholder="Свой тег" autocomplete="off" aria-label="Свой тег">
+                <button type="button" class="text-button" id="addTagButton">Добавить</button>
+              </div>
+            </div>
+
+            <label class="upload-box" for="newImage" id="uploadBox">
+              <span class="upload-icon">↑</span>
+              <strong>Главное фото</strong>
+              <small id="fileName">JPG, PNG или WEBP · можно перетащить сюда</small>
+              <input id="newImage" type="file" accept="image/jpeg,image/png,image/webp">
+              <img id="imagePreview" class="image-preview hidden" alt="Предпросмотр">
+            </label>
+
+            <div class="field">
+              <span>Ещё фото <em>(сбоку, сзади — до 3)</em></span>
+              <div class="extra-photos" id="extraPhotos"></div>
+            </div>
+
+            <button class="primary-button" type="submit" id="createSubmit">Создать прическу</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ===== Оценка / рецензия ===== -->
+      <section class="review-view hidden" id="reviewView">
+        <button class="back-button" id="cancelReviewButton" type="button">← Назад к прическе</button>
+
+        <div class="review-layout">
+          <div>
+            <span class="eyebrow" id="reviewEyebrow">НОВАЯ РЕЦЕНЗИЯ</span>
+            <h2 id="reviewTitle"></h2>
+            <p class="form-intro" id="reviewIntro">Можно оставить только оценку или дополнительно написать рецензию.</p>
+          </div>
+
+          <form id="reviewForm">
+            <p class="review-as" id="reviewAs"></p>
+
+            <label class="field" id="reviewTextField">
+              <span>Рецензия <em>(необязательно)</em></span>
+              <textarea id="reviewText" maxlength="800" rows="7" placeholder="Что вам понравилось? Что можно улучшить?"></textarea>
+              <small class="char-counter"><span id="reviewTextCount">0</span> / 800</small>
+            </label>
+
+            <button class="add-text-button hidden" id="addTextButton" type="button">＋ Добавить текст рецензии</button>
+
+            <div class="rating-form">
+              <label class="rating">
+                <span class="rating-top"><span>Аккуратность</span><strong><output id="accuracyValue">5</output>/9</strong></span>
+                <input id="accuracy" type="range" min="1" max="9" value="5">
+              </label>
+              <label class="rating">
+                <span class="rating-top"><span>Красота</span><strong><output id="beautyValue">5</output>/9</strong></span>
+                <input id="beauty" type="range" min="1" max="9" value="5">
+              </label>
+              <label class="rating">
+                <span class="rating-top"><span>Как выглядит на человеке</span><strong><output id="appearanceValue">5</output>/9</strong></span>
+                <input id="appearance" type="range" min="1" max="9" value="5">
+              </label>
+              <label class="rating">
+                <span class="rating-top"><span>Личное восприятие</span><strong><output id="personalValue">5</output>/10</strong></span>
+                <input id="personal" type="range" min="1" max="10" value="5">
+              </label>
+            </div>
+
+            <div class="live-score">
+              <span><span class="live-label">Ваша итоговая оценка</span><b id="liveVerdict">Нормально</b></span>
+              <strong><span id="liveScore">34</span><small>/ 67</small></strong>
+            </div>
+
+            <button class="primary-button" type="submit" id="reviewSubmit">Опубликовать рецензию</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ===== Вход и регистрация ===== -->
+      <section class="auth-view hidden" id="authView">
+        <button class="back-button" id="authBackButton" type="button">← Назад</button>
+
+        <div class="form-card auth-card">
+          <div class="sort-tabs auth-tabs" id="authTabs" role="tablist" aria-label="Вход или регистрация">
+            <button type="button" data-auth="login" class="active" role="tab">Вход</button>
+            <button type="button" data-auth="signup" role="tab">Регистрация</button>
+          </div>
+          <h2 id="authHeading">С возвращением</h2>
+          <p class="form-intro" id="authIntro">Войдите, чтобы добавлять прически и ставить оценки.</p>
+
+          <form id="authForm" novalidate>
+            <label class="field hidden" id="usernameField">
+              <span>Ник</span>
+              <input id="authUsername" class="text-input" type="text" maxlength="24" autocomplete="username" placeholder="Например, stepan">
+              <small class="field-hint">3–24 символа: буквы, цифры, _ . -  Его увидят другие участники.</small>
+            </label>
+            <label class="field">
+              <span>Почта</span>
+              <input id="authEmail" class="text-input" type="email" autocomplete="email" placeholder="name@mail.ru">
+            </label>
+            <label class="field">
+              <span>Пароль</span>
+              <input id="authPassword" class="text-input" type="password" autocomplete="current-password" placeholder="Не меньше 6 символов">
+            </label>
+            <p class="form-error hidden" id="authError" role="alert"></p>
+            <button class="primary-button" type="submit" id="authSubmit">Войти</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ===== Топ ===== -->
+      <section class="top-view hidden" id="topView">
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">РЕЙТИНГ</span>
+            <h2>Топ причесок</h2>
+          </div>
+          <span class="catalog-count" id="topStats"></span>
+        </div>
+        <div class="sort-tabs period-tabs" id="periodTabs" aria-label="Период">
+          <button type="button" data-period="week">Неделя</button>
+          <button type="button" data-period="month">Месяц</button>
+          <button type="button" data-period="year">Год</button>
+          <button type="button" data-period="all" class="active">Всё время</button>
+        </div>
+        <div class="top-list" id="topList"></div>
+      </section>
+
+      <!-- ===== Лента рецензий ===== -->
+      <section class="feed-view hidden" id="feedView">
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">ЛЕНТА</span>
+            <h2>Все рецензии</h2>
+          </div>
+          <span class="catalog-count" id="feedStats"></span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="feedTextOnly">
+          <span class="toggle-track" aria-hidden="true"></span>
+          <span>Только с текстом</span>
+        </label>
+        <div class="feed-list" id="feedList"></div>
+      </section>
+
+      <!-- ===== Участники ===== -->
+      <section class="users-view hidden" id="usersView">
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">СООБЩЕСТВО</span>
+            <h2>Участники</h2>
+          </div>
+          <span class="catalog-count" id="usersStats"></span>
+        </div>
+        <div class="users-list" id="usersList"></div>
+      </section>
+
+      <!-- ===== Профиль ===== -->
+      <section class="user-view hidden" id="userView">
+        <button class="back-button" id="userBackButton" type="button">← Назад</button>
+        <div id="userProfile"></div>
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">ИСТОРИЯ</span>
+            <h3>Все оценки</h3>
+          </div>
+          <span id="userReviewCount"></span>
+        </div>
+        <div class="feed-list" id="userReviews"></div>
+      </section>
+
+      <!-- ===== Сравнение ===== -->
+      <section class="compare-view hidden" id="compareView">
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">СРАВНЕНИЕ</span>
+            <h2>Сравнить прически</h2>
+          </div>
+        </div>
+        <div class="compare-pickers" id="comparePickers">
+          <select id="compareA" class="select" aria-label="Первая прическа"></select>
+          <span class="compare-vs">vs</span>
+          <select id="compareB" class="select" aria-label="Вторая прическа"></select>
+        </div>
+        <div id="compareResult"></div>
+      </section>
+
+      <footer class="app-footer">
+        <span id="footerInfo">Общий каталог HairRate</span>
+        <div class="footer-actions">
+          <button type="button" class="link-button hidden" id="importButton">Перенести прически из резервной копии</button>
+          <button type="button" class="link-button hidden" id="logoutButton">Выйти</button>
+          <input type="file" id="importInput" accept="application/json,.json" hidden>
+        </div>
+      </footer>
+    </section>
+  </main>
+
+  <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="Просмотр фото">
+    <img id="lightboxImage" alt="">
+    <button type="button" class="lightbox-close" id="lightboxClose" aria-label="Закрыть">✕</button>
+    <button type="button" class="lightbox-nav prev" id="lightboxPrev" aria-label="Предыдущее фото">‹</button>
+    <button type="button" class="lightbox-nav next" id="lightboxNext" aria-label="Следующее фото">›</button>
+    <span class="lightbox-counter" id="lightboxCounter"></span>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span id="toastText"></span>
+    <button type="button" class="toast-action hidden" id="toastAction"></button>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
