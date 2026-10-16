@@ -38,6 +38,7 @@ let me = null;                 // { id, username, is_admin }
 let session = null;            // { access_token, refresh_token, expires_at, user: { id, email } }
 let loadState = "loading";     // "loading" | "ready" | "error"
 let lastLoadedAt = 0;
+let lastLoadError = null;
 
 let selectedPhotoId = null;
 let draftMain = null;          // { src, path? , data? }
@@ -240,7 +241,7 @@ async function apiSignOut() {
 const HAIRSTYLE_SELECT = [
   "id", "owner", "title", "description", "tags", "images", "created_at",
   "owner_profile:profiles(username)",
-  "reviews(id,author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,author_profile:profiles(username))"
+  "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,author_profile:profiles(username))"
 ].join(",");
 
 function rest(path, options = {}) {
@@ -248,11 +249,20 @@ function rest(path, options = {}) {
 }
 
 async function apiLoadAll() {
-  const [rows, people] = await Promise.all([
-    rest(`hairstyles?select=${encodeURIComponent(HAIRSTYLE_SELECT)}&order=created_at.desc`),
-    rest("profiles?select=id,username,is_admin,created_at&order=created_at.asc")
-  ]);
-  return { rows, people };
+  const people = rest("profiles?select=id,username,is_admin,created_at&order=created_at.asc");
+  let rows;
+  try {
+    rows = await rest(`hairstyles?select=${encodeURIComponent(HAIRSTYLE_SELECT)}&order=created_at.desc`);
+  } catch (error) {
+    // База со старой схемой (без колонки legacy_author): грузим без неё
+    if (error.code === "42703" || /legacy_author/.test(error.message)) {
+      rows = await rest(`hairstyles?select=${encodeURIComponent(HAIRSTYLE_SELECT.replace("legacy_author,", ""))}&order=created_at.desc`);
+    } else {
+      people.catch(() => {});
+      throw error;
+    }
+  }
+  return { rows, people: await people };
 }
 
 async function apiUsernameTaken(username) {
@@ -321,6 +331,9 @@ function humanError(error) {
   const status = error?.status || 0;
 
   if (code === "network" || status === 0) return "Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.";
+  if (code === "email_provider_disabled" || code === "signup_disabled" || /signups? (are )?(disabled|not allowed)/i.test(message)) {
+    return "Регистрация выключена в настройках Supabase. Владельцу сайта: Authentication → Sign In / Providers — включите «Allow new users to sign up» и провайдер Email.";
+  }
   if (code === "invalid_credentials" || /invalid login credentials/i.test(message)) return "Неверная почта или пароль.";
   if (code === "user_already_exists" || /already registered/i.test(message)) return "Эта почта уже зарегистрирована. Попробуйте войти.";
   if (code === "weak_password" || /password should be/i.test(message)) return "Пароль слишком простой: нужно не меньше 6 символов.";
@@ -330,6 +343,7 @@ function humanError(error) {
   if (code === "email_address_invalid" || /invalid format|validate email/i.test(message)) return "Проверьте адрес почты.";
   if (status === 429 || /rate limit/i.test(message)) return "Слишком много попыток. Подождите минуту.";
   if (code === "23505") return "Такая запись уже есть.";
+  if (code === "PGRST204" || /legacy_author/.test(message)) return "База устарела: выполните в Supabase последнюю версию setup.sql.";
   if (status === 413 || /too large/i.test(message)) return "Фото слишком большое.";
   if (code === "no_rows") return "Эта запись уже удалена или изменена в другом месте. Данные обновлены, попробуйте ещё раз.";
   if (status === 401 || status === 403 || code === "42501") return "Нет прав на это действие. Попробуйте войти заново.";
@@ -361,7 +375,8 @@ function mapHairstyle(row) {
     reviews: (row.reviews || []).map(review => ({
       id: review.id,
       authorId: review.author,
-      author: review.author_profile?.username || ANON,
+      author: review.author_profile?.username || review.legacy_author || ANON,
+      legacy: Boolean(review.legacy_author),
       text: review.text || "",
       accuracy: review.accuracy,
       beauty: review.beauty,
@@ -715,9 +730,13 @@ function reviewCardHtml(review, photo, { withPhoto = false, actions = false } = 
         ${withPhoto ? `<a class="review-hair" href="${hairHref(photo.id)}">${escapeHtml(photo.title)}</a>` : ""}
         <div class="review-card-top">
           <span class="review-byline">
-            <a class="review-author" href="${userHref(author)}">
-              <span class="avatar size-xs">${escapeHtml(initial(author))}</span>${escapeHtml(author)}${isMine ? " <em>(вы)</em>" : ""}
-            </a>
+            ${review.legacy
+              ? `<span class="review-author legacy" title="Оценка перенесена из старой версии сайта, без аккаунта">
+                   <span class="avatar size-xs">${escapeHtml(initial(author))}</span>${escapeHtml(author)} <em>(из старой версии)</em>
+                 </span>`
+              : `<a class="review-author" href="${userHref(author)}">
+                   <span class="avatar size-xs">${escapeHtml(initial(author))}</span>${escapeHtml(author)}${isMine ? " <em>(вы)</em>" : ""}
+                 </a>`}
             <span>${hasText ? "Рецензия" : "Оценка"}${date ? ` · ${date}` : ""}${review.edited ? " · изменено" : ""}</span>
           </span>
           <div class="review-card-side">
@@ -932,14 +951,49 @@ function renderLoading() {
   document.getElementById("catalogCount").textContent = "";
 
   if (loadState === "error") {
-    hairGrid.innerHTML = isConfigured()
-      ? emptyState("!", "Не удалось загрузить каталог", "Проверьте интернет. Если сайт долго не открывали, проект Supabase мог уснуть: владельцу нужно нажать «Restore» в панели Supabase.",
-          `<button type="button" class="empty-add-button" id="retryButton">Повторить</button>`)
-      : emptyState("!", "Сайт ещё не подключён к базе", "Впишите адрес проекта Supabase и публичный ключ в файл config.js.");
+    if (!isConfigured()) {
+      hairGrid.innerHTML = emptyState("!", "Сайт ещё не подключён к базе", "Впишите адрес проекта Supabase и публичный ключ в файл config.js.");
+      return;
+    }
+    const problem = describeLoadError(lastLoadError);
+    const detail = lastLoadError
+      ? `<small class="error-detail">Подробности: ${escapeHtml(lastLoadError.code === "network"
+          ? "запрос не дошёл до сервера (сеть)"
+          : [lastLoadError.status, lastLoadError.code, lastLoadError.message].filter(Boolean).join(" · "))}</small>`
+      : "";
+    hairGrid.innerHTML = emptyState("!", problem.title, problem.text,
+      `${detail}<button type="button" class="empty-add-button" id="retryButton">Повторить</button>`);
     document.getElementById("retryButton")?.addEventListener("click", startLoading);
   } else {
     hairGrid.innerHTML = `<div class="loading-state"><span class="spinner" aria-hidden="true"></span>Загружаем каталог…</div>`;
   }
+}
+
+// Понятное объяснение, почему каталог не загрузился
+function describeLoadError(error) {
+  const message = String(error?.message || "");
+  const code = String(error?.code || "");
+  const status = error?.status || 0;
+
+  if (code === "network" || status === 0) {
+    return {
+      title: "Нет связи с базой",
+      text: "Браузер не смог достучаться до сервера supabase.co. Чаще всего так бывает, когда домен блокирует провайдер, особенно в мобильном интернете. Попробуйте другую сеть, например домашний Wi‑Fi. Если не поможет — нужен обход через свой адрес."
+    };
+  }
+  if (code === "PGRST205" || code === "42P01" || /could not find the table|does not exist/i.test(message)) {
+    return { title: "База ещё не настроена", text: "В Supabase нет нужных таблиц. Откройте SQL Editor, вставьте setup.sql целиком и нажмите Run." };
+  }
+  if (code === "PGRST200" || /relationship/i.test(message)) {
+    return { title: "Схема базы устарела", text: "Выполните setup.sql в Supabase ещё раз целиком: повторный запуск безопасен." };
+  }
+  if (status === 401 || /api key/i.test(message)) {
+    return { title: "Неверный ключ доступа", text: "Проверьте publishable key в config.js: он должен совпадать с ключом из Project Settings → API Keys." };
+  }
+  if (status >= 500) {
+    return { title: "База сейчас недоступна", text: "Если сайт долго не открывали, бесплатный проект Supabase засыпает: владельцу нужно нажать «Restore project» в панели Supabase." };
+  }
+  return { title: "Не удалось загрузить каталог", text: "Попробуйте обновить страницу. Если ошибка повторяется, пришлите разработчику строку «Подробности» ниже." };
 }
 
 /* ---------- Каталог ---------- */
@@ -2210,13 +2264,20 @@ function sanitizeLegacyPhoto(raw) {
     return number >= 1 && number <= max ? number : null;
   };
 
+  const isoDate = value => {
+    const time = Number(value);
+    return Number.isSafeInteger(time) && time > 1e12 && time <= Date.now() ? new Date(time).toISOString() : null;
+  };
+
   return {
     title,
+    created: isoDate(raw.id),
     description: String(raw.description || "").trim().slice(0, 240),
     tags,
     images: [raw.image, ...(Array.isArray(raw.extra) ? raw.extra : []).filter(isSafeImage).slice(0, MAX_EXTRA_PHOTOS)],
     reviews: (Array.isArray(raw.reviews) ? raw.reviews : []).map(review => ({
-      author: String(review?.author || "").trim(),
+      author: String(review?.author || "").trim().slice(0, 30),
+      created: isoDate(review?.id),
       text: String(review?.text || "").trim().slice(0, 800),
       accuracy: pick(review?.accuracy, 9),
       beauty: pick(review?.beauty, 9),
@@ -2244,38 +2305,83 @@ async function importBackup(file) {
     return;
   }
 
-  const existingTitles = new Set(photos.filter(photo => photo.owner === me.id).map(photo => photo.title.toLowerCase()));
-  const fresh = items.filter(item => !existingTitles.has(item.title.toLowerCase()));
-  if (!fresh.length) {
-    showToast("Все прически из файла уже есть в вашем каталоге.");
-    return;
-  }
+  const isAdmin = Boolean(me.is_admin);
+  const myName = me.username.toLowerCase();
+  const stats = { created: 0, updated: 0, mine: 0, archive: 0, skippedArchive: 0 };
 
-  let done = 0;
-  let reviewsDone = 0;
   try {
-    for (const item of fresh) {
-      showToast(`Переносим ${done + 1} из ${fresh.length}…`, { duration: 60000 });
+    for (const [index, item] of items.entries()) {
+      showToast(`Переносим ${index + 1} из ${items.length}…`, { duration: 120000 });
+
+      // Фото из копии часто несжатые: пережимаем до 1400 px перед загрузкой
+      const images = [];
+      for (const image of item.images) {
+        images.push(await compressImage(dataUrlToBlob(image)).catch(() => image));
+      }
+
+      const existing = photos.find(photo => photo.owner === me.id && photo.title.toLowerCase() === item.title.toLowerCase());
       const uploaded = [];
+      let hairId;
+
       try {
-        const paths = await uploadDraftImages(item.images.map(data => ({ data })), uploaded);
-        const row = await apiInsert("hairstyles", { title: item.title, description: item.description, tags: item.tags, images: paths });
-        const mine = item.reviews.find(review => review.author.toLowerCase() === me.username.toLowerCase());
-        if (mine) {
-          await apiInsert("reviews", {
-            hairstyle_id: row.id, text: mine.text, accuracy: mine.accuracy, beauty: mine.beauty, appearance: mine.appearance, personal: mine.personal
+        const paths = await uploadDraftImages(images.map(image => ({ data: image })), uploaded);
+        if (existing) {
+          // Уже перенесённая прическа: обновляем фото на сжатые, новую карточку не создаём
+          await apiUpdate("hairstyles", existing.id, { images: paths });
+          apiRemoveImages(existing.paths.filter(path => !paths.includes(path))).catch(() => {});
+          hairId = existing.id;
+          stats.updated++;
+        } else {
+          const row = await apiInsert("hairstyles", {
+            title: item.title, description: item.description, tags: item.tags, images: paths,
+            ...(item.created ? { created_at: item.created } : {})
           });
-          reviewsDone++;
+          hairId = row.id;
+          stats.created++;
         }
-        done++;
       } catch (error) {
         if (uploaded.length) apiRemoveImages(uploaded).catch(() => {});
         throw error;
       }
+
+      const hasMine = Boolean(existing && myReview(existing));
+      const hasArchive = Boolean(existing && existing.reviews.some(review => review.legacy));
+      let addedMine = false;
+
+      for (const review of item.reviews) {
+        const scores = { text: review.text, accuracy: review.accuracy, beauty: review.beauty, appearance: review.appearance, personal: review.personal };
+        const created = review.created ? { created_at: review.created } : {};
+
+        if (review.author && review.author.toLowerCase() === myName) {
+          if (!hasMine && !addedMine) {
+            await apiInsert("reviews", { hairstyle_id: hairId, ...scores, ...created });
+            addedMine = true;
+            stats.mine++;
+          }
+          continue;
+        }
+
+        if (!isAdmin) {
+          stats.skippedArchive++;
+          continue;
+        }
+        if (hasArchive) continue;   // архивные оценки этой прически уже перенесены
+
+        await apiInsert("reviews", { hairstyle_id: hairId, author: null, legacy_author: review.author || ANON, ...scores, ...created });
+        stats.archive++;
+      }
     }
-    showToast(`Перенесено: ${formatCount(done, "прическа", "прически", "причесок")}${reviewsDone ? `, ваших оценок: ${reviewsDone}` : ""}.`, { duration: 6000 });
+
+    const parts = [];
+    if (stats.created) parts.push(`новых причесок: ${stats.created}`);
+    if (stats.updated) parts.push(`обновлено фото у ${formatCount(stats.updated, "прически", "причесок", "причесок")}`);
+    if (stats.mine) parts.push(`ваших оценок: ${stats.mine}`);
+    if (stats.archive) parts.push(`оценок из старой версии: ${stats.archive}`);
+    let message = `Готово: ${parts.join(", ") || "новых данных нет"}.`;
+    if (stats.skippedArchive) message += ` ${formatCount(stats.skippedArchive, "чужая оценка", "чужие оценки", "чужих оценок")} не перенесены: это может сделать только админ.`;
+    showToast(message, { duration: 9000 });
   } catch (error) {
-    showToast(`Перенесено ${done} из ${fresh.length}. ${humanError(error)}`, { duration: 8000 });
+    showToast(`Перенос прерван. ${humanError(error)} Запустите его ещё раз: уже перенесённое не задвоится.`, { duration: 9000 });
   }
 
   await refreshData().catch(() => {});
@@ -2547,6 +2653,14 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !detailView.classList.contains("hidden")) goBack("#/");
 });
 
+document.addEventListener("error", event => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  const holder = image.closest(".card-image-wrap, .detail-photo, .hero-photo, .compare-photo, .top-thumb, .review-photo, .gallery-thumb");
+  if (!holder || holder.querySelector(".img-error")) return;
+  holder.insertAdjacentHTML("beforeend", `<span class="img-error">Фото не загрузилось</span>`);
+}, true);
+
 window.addEventListener("popstate", () => {
   routeHash = location.hash || "#/";
   handleRoute();
@@ -2581,7 +2695,9 @@ async function startLoading() {
   handleRoute();
   try {
     await refreshData();
-  } catch {
+    lastLoadError = null;
+  } catch (error) {
+    lastLoadError = error;
     loadState = "error";
   }
   handleRoute();
