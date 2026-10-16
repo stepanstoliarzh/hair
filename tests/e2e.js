@@ -126,6 +126,23 @@ function check(name, condition, detail = "") {
     const [download] = await Promise.all([guest.waitForEvent("download", { timeout: 15000 }), guest.click("#shareHairButton")]);
     check("картинка-карточка скачивается", download.suggestedFilename().endsWith(".png"));
 
+    const sharer = await newPage({ permissions: ["clipboard-read", "clipboard-write"] });
+    await sharer.goto(SITE + `#/hair/${hairId}`); await sharer.waitForTimeout(900);
+    await sharer.click("#copyLinkButton"); await settle(sharer);
+    const copiedLink = await sharer.evaluate(() => navigator.clipboard.readText());
+    check("«Ссылка» копирует адрес прически", copiedLink === SITE + `#/hair/${hairId}`, copiedLink);
+    check("после копирования видно «Ссылка скопирована»", (await text(sharer, "#toastText")) === "Ссылка скопирована.");
+    const opened = await newPage();
+    await opened.goto(copiedLink); await opened.waitForTimeout(900);
+    check("скопированная ссылка открывает ту же прическу", !(await opened.isHidden("#detailView")) && (await text(opened, "#detailTitle")).length > 0);
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE + `#/hair/${hairId}`); await phone.waitForTimeout(900);
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      check(`${colorScheme}: страница прически с «Ссылка» без горизонтальной прокрутки`, !overflow && (await phone.isVisible("#copyLinkButton")));
+      await phone.screenshot({ path: path.join(SHOTS, `phone-hair-${colorScheme}.png`) });
+    }
+
     // ---------- Второй участник и права ----------
     console.log("Второй участник и права доступа");
     const masha = await newPage();
