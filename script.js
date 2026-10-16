@@ -8,6 +8,7 @@ const BUCKET = "photos";
 
 const SESSION_KEY = "hairrate_session";
 const THEME_KEY = "hairrate_theme";
+const SEEN_KEY = "hairrate_seen";      // время самой новой записи, которую этот браузер уже видел
 
 const IMAGE_MAX_SIDE = 1400;
 const IMAGE_QUALITY = 0.82;
@@ -40,6 +41,7 @@ let loadState = "loading";     // "loading" | "ready" | "error"
 let lastLoadedAt = 0;
 let lastLoadError = null;
 let likesEnabled = true;       // false, если в базе ещё нет таблицы review_likes
+let seenBefore = null;         // граница «нового»: что было видно на прошлом визите (null — первый визит)
 
 let selectedPhotoId = null;
 let draftMain = null;          // { src, path? , data? }
@@ -421,7 +423,46 @@ async function refreshData() {
   me = session ? profiles.find(profile => profile.id === session.user.id) || null : null;
   loadState = "ready";
   lastLoadedAt = Date.now();
+  rememberSeen();
   updateAuthUI();
+}
+
+/* ---------- «Новое с прошлого визита» ----------
+   Граница — время самой новой записи с прошлого визита (по часам базы, а не телефона).
+   Её читаем один раз при открытии сайта; после каждой загрузки запоминаем новую. */
+
+function readSeen() {
+  try {
+    const value = Number(localStorage.getItem(SEEN_KEY));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberSeen() {
+  const newest = photos.reduce((max, photo) => Math.max(max, photo.created,
+    ...photo.reviews.map(review => review.created)), 0);
+  if (!newest) return;
+  try {
+    if (newest > (readSeen() || 0)) localStorage.setItem(SEEN_KEY, String(newest));
+  } catch { /* без хранилища метки «новое» просто не появятся */ }
+}
+
+function isNewSince(created, authorId) {
+  return seenBefore !== null && created > seenBefore && !(me && authorId === me.id);
+}
+
+function isNewPhoto(photo) {
+  return isNewSince(photo.created, photo.owner);
+}
+
+function isNewReview(review) {
+  return isNewSince(review.created, review.authorId);
+}
+
+function newReviewsCount(photo) {
+  return (photo.reviews || []).filter(isNewReview).length;
 }
 
 function getPhoto(id) {
@@ -772,6 +813,7 @@ function reviewCardHtml(review, photo, { withPhoto = false, actions = false } = 
                    <span class="avatar size-xs">${escapeHtml(initial(author))}</span>${escapeHtml(author)}${isMine ? " <em>(вы)</em>" : ""}
                  </a>`}
             <span>${hasText ? "Рецензия" : "Оценка"}${date ? ` · ${date}` : ""}${review.edited ? " · изменено" : ""}</span>
+            ${isNewReview(review) ? `<span class="new-mark" title="Появилась после вашего прошлого визита">Новое</span>` : ""}
           </span>
           <div class="review-card-side">
             <span class="review-score tier-${verdict.tier}"><strong>${review.score}</strong>/67 · ${verdict.label}</span>
@@ -1178,6 +1220,8 @@ function renderCatalog() {
     const tags = tagsText(photo);
     const photoCount = getImages(photo).length;
     const rated = Boolean(myReview(photo));
+    const isNew = isNewPhoto(photo);
+    const freshReviews = isNew ? 0 : newReviewsCount(photo);
     const card = document.createElement("button");
     card.type = "button";
     card.className = "hair-card";
@@ -1185,6 +1229,7 @@ function renderCatalog() {
       <div class="card-image-wrap">
         <img src="${escapeHtml(photo.image)}" alt="${escapeHtml(photo.title)}" loading="lazy">
         ${photoCount > 1 ? `<span class="card-photo-count">${photoCount} фото</span>` : ""}
+        ${isNew ? `<span class="card-new" title="Появилась после вашего прошлого визита">Новое</span>` : ""}
         ${score !== null
           ? `<div class="card-score tier-${getVerdict(score).tier}">
                <span class="card-score-number"><strong>${score}</strong><span>/ 67</span></span>
@@ -1196,7 +1241,7 @@ function renderCatalog() {
         <div>
           <span class="eyebrow">ПРИЧЁСКА</span>
           <h3>${escapeHtml(photo.title)}</h3>
-          <span class="card-meta">${count ? formatCount(count, "оценка", "оценки", "оценок") : "Будьте первым, кто оценит"}${rated ? " · вы оценили" : ""}</span>
+          <span class="card-meta">${count ? formatCount(count, "оценка", "оценки", "оценок") : "Будьте первым, кто оценит"}${rated ? " · вы оценили" : ""}${freshReviews ? ` · <b class="card-fresh">+${formatCount(freshReviews, "новая", "новые", "новых")}</b>` : ""}</span>
           ${tags ? `<span class="card-tags">${tags}</span>` : ""}
         </div>
         <span class="card-arrow">→</span>
@@ -1561,8 +1606,10 @@ function renderFeed() {
     .sort((a, b) => b.review.created - a.review.created);
 
   document.getElementById("feedTextOnly").checked = feedTextOnly;
+  const freshCount = items.filter(({ review }) => isNewReview(review)).length;
   document.getElementById("feedStats").textContent = items.length
-    ? formatCount(items.length, feedTextOnly ? "рецензия" : "оценка", feedTextOnly ? "рецензии" : "оценки", feedTextOnly ? "рецензий" : "оценок")
+    ? formatCount(items.length, feedTextOnly ? "рецензия" : "оценка", feedTextOnly ? "рецензии" : "оценки", feedTextOnly ? "рецензий" : "оценок") +
+      (freshCount ? ` · ${formatCount(freshCount, "новая", "новые", "новых")}` : "")
     : "";
 
   const box = document.getElementById("feedList");
@@ -2873,6 +2920,7 @@ function init() {
   }
 
   session = loadStoredSession();
+  seenBefore = readSeen();
   updateAuthUI();
   startLoading();
 }

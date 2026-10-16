@@ -545,6 +545,25 @@ h3 { margin-top: 4px; font-size: 19px; }
   font-weight: 700;
 }
 
+.card-new {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.card-fresh {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .card-no-score {
   right: 12px;
   bottom: 12px;
@@ -1137,6 +1156,19 @@ h3 { margin-top: 4px; font-size: 19px; }
 .review-like:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
 .review-like.active { border-color: var(--ink); color: var(--ink); }
 .review-like:disabled { cursor: default; opacity: .7; }
+
+.new-mark {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
 
 .owner-like {
   display: inline-flex;
