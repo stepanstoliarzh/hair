@@ -264,6 +264,60 @@ function check(name, condition, detail = "") {
       await phone.screenshot({ path: path.join(SHOTS, `phone-likes-${colorScheme}.png`), fullPage: true });
     }
 
+    // ---------- «Новое с прошлого визита» ----------
+    console.log("Новое с прошлого визита");
+    const hairCreated = Number(sql(`select floor(extract(epoch from created_at) * 1000)::bigint from hairstyles where id = ${hairId}`));
+    const markCounts = page => page.evaluate(() => ({
+      cards: document.querySelectorAll(".card-new").length,
+      marks: [...document.querySelectorAll(".new-mark")].filter(item => item.offsetParent).length
+    }));
+    const backdateSeen = (page, time) => page.evaluate(value => localStorage.setItem("hairrate_seen", String(value)), time);
+    const visitor = await newPage();
+    await visitor.goto(SITE); await visitor.waitForTimeout(900);
+    let marks = await markCounts(visitor);
+    check("первый визит — без меток «новое»", marks.cards === 0 && marks.marks === 0, JSON.stringify(marks));
+    const seenStored = Number(await visitor.evaluate(() => localStorage.getItem("hairrate_seen")));
+    const newestInDb = Number(sql(`select floor(extract(epoch from max(t)) * 1000)::bigint from (select created_at t from hairstyles union all select created_at from reviews) x`));
+    check("сайт запомнил самую новую запись", Math.abs(seenStored - newestInDb) <= 1, `${seenStored} / ${newestInDb}`);
+
+    await backdateSeen(visitor, hairCreated - 1000);
+    await visitor.reload(); await visitor.waitForTimeout(900);
+    marks = await markCounts(visitor);
+    check("прическа после прошлого визита помечена «Новое»", marks.cards === 1 && (await text(visitor, ".card-new")) === "Новое", JSON.stringify(marks));
+    await visitor.goto(SITE + "#/reviews"); await settle(visitor);
+    marks = await markCounts(visitor);
+    check("в ленте новые оценки помечены", marks.marks === 2 && (await text(visitor, "#feedStats")).endsWith("· 2 новые"), `${marks.marks}, ${await text(visitor, "#feedStats")}`);
+    await visitor.reload(); await visitor.waitForTimeout(900);
+    marks = await markCounts(visitor);
+    check("при следующем визите метки исчезают", marks.cards === 0 && marks.marks === 0, JSON.stringify(marks));
+
+    const mashaReviewCreated = Number(sql(`select floor(extract(epoch from r.created_at) * 1000)::bigint from reviews r join profiles p on p.id = r.author where p.username = 'masha_k' and r.hairstyle_id = ${hairId}`));
+    await backdateSeen(visitor, mashaReviewCreated - 1);
+    await visitor.goto(SITE); await visitor.reload(); await visitor.waitForTimeout(900);
+    marks = await markCounts(visitor);
+    check("на карточке с новой оценкой — «+1 новая»", marks.cards === 0 && (await text(visitor, ".hair-card .card-fresh")) === "+1 новая", await text(visitor, ".hair-card .card-meta"));
+
+    await backdateSeen(masha, hairCreated - 1000);
+    await masha.goto(SITE + `#/hair/${hairId}`); await masha.reload(); await masha.waitForTimeout(900);
+    check("свою оценку участник не видит как новую", (await masha.$$eval(".review-card.mine .new-mark", items => items.length)) === 0 && (await masha.$$eval(".review-card:not(.mine) .new-mark", items => items.length)) === 1);
+    await guest.reload(); await guest.waitForTimeout(900);
+    await backdateSeen(guest, hairCreated - 1000);
+    await guest.goto(SITE); await guest.reload(); await guest.waitForTimeout(900);
+    check("свою прическу автор не видит как новую", (await guest.$$eval(".card-new", items => items.length)) === 0 && (await text(guest, ".hair-card .card-fresh")) === "+1 новая");
+
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE); await phone.waitForTimeout(700);
+      for (const route of ["#/", "#/reviews"]) {
+        await backdateSeen(phone, hairCreated - 1000);
+        await phone.goto(SITE + route); await phone.reload(); await phone.waitForTimeout(700);
+        const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+        const shown = await markCounts(phone);
+        check(`${colorScheme}: ${route} с метками «новое» без горизонтальной прокрутки`, !overflow && shown.cards + shown.marks > 0, `прокрутка: ${overflow}, меток: ${JSON.stringify(shown)}`);
+        await phone.screenshot({ path: path.join(SHOTS, `phone-new-${route === "#/" ? "catalog" : "feed"}-${colorScheme}.png`) });
+      }
+    }
+
     // ---------- Админ: удаление чужой оценки и перенос старой копии ----------
     console.log("Админ");
     sql("update profiles set is_admin = true where username = 'masha_k'");
