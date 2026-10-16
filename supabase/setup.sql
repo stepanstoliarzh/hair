@@ -123,12 +123,28 @@ create index if not exists hairstyles_wearer_idx on public.hairstyles (wearer);
 create index if not exists reviews_hairstyle_idx on public.reviews (hairstyle_id);
 create index if not exists reviews_author_idx on public.reviews (author);
 
+-- ---------- Лайки рецензий ----------
+-- Любой участник может отметить чужую рецензию (одна отметка от человека, её можно снять).
+-- Если отметил владелец прически (hairstyles.wearer), сайт показывает это отдельно.
+-- user_id ссылается на auth.users, а не на profiles: иначе PostgREST увидит вторую связь
+-- reviews ↔ profiles (через лайки), и старая версия сайта перестанет загружать ники авторов.
+create table if not exists public.review_likes (
+  review_id bigint not null references public.reviews (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (review_id, user_id)
+);
+create index if not exists review_likes_user_idx on public.review_likes (user_id);
+
 -- ---------- Права ролей Data API ----------
 -- В новых проектах Supabase таблицы не открываются для сайта автоматически,
 -- поэтому права выдаются явно. Что именно разрешено, дальше уточняют правила RLS.
 grant usage on schema public to anon, authenticated;
 grant select on public.profiles, public.hairstyles, public.reviews to anon, authenticated;
 grant insert, delete on public.hairstyles, public.reviews to authenticated;
+grant select on public.review_likes to anon, authenticated;
+grant insert, delete on public.review_likes to authenticated;
+revoke update on public.review_likes from anon, authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on function public.hairrate_score(int, int, int, int) to anon, authenticated;
 grant execute on function public.is_admin() to anon, authenticated;
@@ -137,6 +153,7 @@ grant execute on function public.is_admin() to anon, authenticated;
 alter table public.profiles enable row level security;
 alter table public.hairstyles enable row level security;
 alter table public.reviews enable row level security;
+alter table public.review_likes enable row level security;
 
 -- Смотреть каталог могут все, даже без входа
 drop policy if exists "profiles: read" on public.profiles;
@@ -195,6 +212,27 @@ drop policy if exists "reviews: delete own or admin" on public.reviews;
 create policy "reviews: delete own or admin" on public.reviews
   for delete to authenticated
   using (author = (select auth.uid()) or (select public.is_admin()));
+
+-- Лайки: видят все; ставить можно только от своего имени и не на свою рецензию; снимать — только свои
+drop policy if exists "review_likes: read" on public.review_likes;
+create policy "review_likes: read" on public.review_likes
+  for select to anon, authenticated using (true);
+
+drop policy if exists "review_likes: insert own" on public.review_likes;
+create policy "review_likes: insert own" on public.review_likes
+  for insert to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and not exists (
+      select 1 from public.reviews r
+      where r.id = review_id and r.author = (select auth.uid())
+    )
+  );
+
+drop policy if exists "review_likes: delete own" on public.review_likes;
+create policy "review_likes: delete own" on public.review_likes
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
 
 -- Владельца и автора нельзя подменить при изменении записи
 revoke update on public.hairstyles from anon, authenticated;

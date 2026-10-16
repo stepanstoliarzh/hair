@@ -204,6 +204,66 @@ function check(name, condition, detail = "") {
       await phone.screenshot({ path: path.join(SHOTS, `phone-wearer-${colorScheme}.png`), fullPage: true });
     }
 
+    // ---------- Лайки рецензий и лайк владельца прически ----------
+    console.log("Лайки рецензий");
+    const likeCount = () => sql(`select count(*) from review_likes l join reviews r on r.id = l.review_id where r.hairstyle_id = ${hairId}`);
+    await masha.goto(SITE + `#/hair/${hairId}`); await masha.reload(); await masha.waitForTimeout(900);
+    check("свою рецензию лайкнуть нельзя (кнопка неактивна)", await masha.isDisabled(".review-card.mine .review-like"));
+    await masha.click(".review-card:not(.mine) .review-like"); await masha.waitForTimeout(700);
+    check("владелец прически лайкнул рецензию", likeCount() === "1" && (await text(masha, ".review-card:not(.mine) .review-like")) === "♥1");
+    check("у рецензии пометка «Нравится владельцу прически»", (await text(masha, ".review-card:not(.mine) .owner-like")).includes("Нравится владельцу прически"));
+    await masha.setViewportSize({ width: 1280, height: 500 });
+    const likesScrollBefore = await masha.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); return window.scrollY; });
+    await masha.click(".review-card:not(.mine) .review-like"); await masha.waitForTimeout(700);
+    const likesScrollAfter = await masha.evaluate(() => window.scrollY);
+    check("повторное нажатие снимает лайк, страница не прыгает наверх", likeCount() === "0" && !(await masha.isVisible(".owner-like")) && likesScrollBefore > 0 && likesScrollAfter > 0, `${likesScrollBefore} → ${likesScrollAfter}`);
+    await masha.setViewportSize({ width: 1280, height: 900 });
+    await masha.click(".review-card:not(.mine) .review-like"); await masha.waitForTimeout(700);
+
+    await guest.goto(SITE + `#/hair/${hairId}`); await guest.reload(); await guest.waitForTimeout(900);
+    check("другие видят лайк владельца", (await text(guest, ".review-card.mine .owner-like")).includes("Нравится владельцу прически"));
+    await guest.click(".review-card:not(.mine) .review-like"); await guest.waitForTimeout(700);
+    check("обычный лайк участника без пометки владельца", likeCount() === "2" && !(await guest.isVisible(".review-card:not(.mine) .owner-like")));
+    await guest.goto(SITE + "#/reviews"); await settle(guest);
+    check("лайки видны в ленте", (await guest.$$eval("#feedList .owner-like", items => items.length)) === 1);
+
+    const likeAttacks = await masha.evaluate(async ({ id, gw }) => {
+      const session = JSON.parse(localStorage.getItem("hairrate_session"));
+      const headers = { apikey: "sb_publishable__TEST", Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json", Prefer: "return=representation" };
+      const reviews = await (await fetch(`${gw}/rest/v1/reviews?hairstyle_id=eq.${id}&select=id,author`, { headers })).json();
+      const mine = reviews.find(review => review.author === session.user.id);
+      const other = reviews.find(review => review.author !== session.user.id);
+      const ownLike = await fetch(`${gw}/rest/v1/review_likes`, { method: "POST", headers, body: JSON.stringify({ review_id: mine.id }) });
+      const asOther = await fetch(`${gw}/rest/v1/review_likes`, { method: "POST", headers, body: JSON.stringify({ review_id: other.id, user_id: other.author }) });
+      const twice = await fetch(`${gw}/rest/v1/review_likes`, { method: "POST", headers, body: JSON.stringify({ review_id: other.id }) });
+      const removeForeign = await fetch(`${gw}/rest/v1/review_likes?review_id=eq.${mine.id}`, { method: "DELETE", headers });
+      return { ownLike: ownLike.status, asOther: asOther.status, twice: twice.status, removeForeign: `${removeForeign.status}:${await removeForeign.text()}` };
+    }, { id: hairId, gw: GW });
+    check("лайк своей рецензии через API отклоняется", likeAttacks.ownLike === 403, String(likeAttacks.ownLike));
+    check("лайк от чужого имени через API отклоняется", likeAttacks.asOther === 403, String(likeAttacks.asOther));
+    check("второй лайк на ту же рецензию отклоняется", likeAttacks.twice === 409, String(likeAttacks.twice));
+    const oldSelect = await viewer.evaluate(async gw => {
+      const response = await fetch(`${gw}/rest/v1/hairstyles?select=id,reviews(id,author_profile:profiles(username))`, { headers: { apikey: "sb_publishable__TEST" } });
+      return response.status;
+    }, GW);
+    check("прежний запрос сайта (ники без явной связи) работает с таблицей лайков", oldSelect === 200, String(oldSelect));
+    check("чужой лайк снять нельзя", likeAttacks.removeForeign === "200:[]" && likeCount() === "2", likeAttacks.removeForeign);
+
+    await viewer.goto(SITE + `#/hair/${hairId}`); await viewer.reload(); await viewer.waitForTimeout(900);
+    check("гость видит число лайков", (await viewer.$$eval(".review-like b", items => items.map(item => item.textContent).sort().join())) === "1,1");
+    await viewer.click(".review-like"); await settle(viewer);
+    check("лайк без входа ведёт на вход", (await viewer.evaluate(() => location.hash)) === "#/login");
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      for (const route of [`#/hair/${hairId}`, "#/reviews"]) {
+        await phone.goto(SITE + route); await phone.waitForTimeout(700);
+        const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+        const ownerLikes = await phone.$$eval(".owner-like", items => items.filter(item => item.offsetParent).length);
+        check(`${colorScheme}: ${route} с лайками без горизонтальной прокрутки`, !overflow && ownerLikes === 1, `прокрутка: ${overflow}, пометок: ${ownerLikes}`);
+      }
+      await phone.screenshot({ path: path.join(SHOTS, `phone-likes-${colorScheme}.png`), fullPage: true });
+    }
+
     // ---------- Админ: удаление чужой оценки и перенос старой копии ----------
     console.log("Админ");
     sql("update profiles set is_admin = true where username = 'masha_k'");
@@ -257,6 +317,12 @@ function check(name, condition, detail = "") {
     check("без колонки wearer каталог загружается", (await legacy.$$eval(".hair-card", cards => cards.length)) >= 1);
     await legacy.goto(SITE + "#/user/masha_k"); await settle(legacy);
     check("без колонки wearer профиль открывается без статуса владельца", (await text(legacy, "#userProfile")).includes("masha_k") && !(await legacy.isVisible("#wearerPill")));
+    sql("drop table review_likes");
+    await legacy.goto(SITE); await legacy.reload(); await legacy.waitForTimeout(900);
+    check("без таблицы лайков каталог загружается", (await legacy.$$eval(".hair-card", cards => cards.length)) >= 1);
+    sql("notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);
+    await legacy.goto(SITE + "#/reviews"); await legacy.reload(); await legacy.waitForTimeout(900);
+    check("без таблицы лайков лента без кнопок лайка", (await legacy.$$eval("#feedList .review-card", cards => cards.length)) >= 1 && (await legacy.$$eval(".review-like", items => items.length)) === 0);
 
     check("нет ошибок JavaScript на страницах", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {
