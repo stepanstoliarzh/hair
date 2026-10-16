@@ -2290,6 +2290,9 @@ input[type="range"]:focus-visible,
 
 .detail-owner a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+/* Владелец прически: отметка в списке участников */
+.wearer-mark { color: var(--ink); font-weight: 600; }
+
 .detail-actions.single { grid-template-columns: 1fr; }
 
 .review-as {

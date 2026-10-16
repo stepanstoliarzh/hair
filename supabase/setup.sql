@@ -109,6 +109,17 @@ alter table public.reviews add constraint reviews_author_or_legacy check (
   (author is null and char_length(trim(legacy_author)) between 1 and 30)
 );
 
+-- ---------- Владельцы причесок ----------
+-- wearer — аккаунт человека, чья это прическа. Статус «владелец прически» выдаёт
+-- владелец сайта прямо в базе (SQL Editor), с сайта колонку изменить нельзя:
+--   update public.hairstyles
+--     set wearer = (select id from public.profiles where lower(username) = lower('ник'))
+--     where id = 123;
+-- Снять: set wearer = null. Если аккаунт удалят, прическа останется без владельца.
+alter table public.hairstyles
+  add column if not exists wearer uuid references public.profiles (id) on delete set null;
+create index if not exists hairstyles_wearer_idx on public.hairstyles (wearer);
+
 create index if not exists reviews_hairstyle_idx on public.reviews (hairstyle_id);
 create index if not exists reviews_author_idx on public.reviews (author);
 
@@ -149,7 +160,7 @@ create policy "hairstyles: read" on public.hairstyles
 drop policy if exists "hairstyles: insert own" on public.hairstyles;
 create policy "hairstyles: insert own" on public.hairstyles
   for insert to authenticated
-  with check (owner = (select auth.uid()));
+  with check (owner = (select auth.uid()) and wearer is null);
 
 drop policy if exists "hairstyles: update own" on public.hairstyles;
 create policy "hairstyles: update own" on public.hairstyles
