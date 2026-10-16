@@ -1918,6 +1918,12 @@ input[type="range"]::-moz-range-thumb {
   transition: opacity .2s ease, transform .2s ease;
 }
 
+#toastText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .toast.visible {
   opacity: 1;
   pointer-events: auto;

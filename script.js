@@ -2478,6 +2478,43 @@ document.getElementById("shareHairButton").addEventListener("click", async event
   }
 });
 
+function hairShareUrl(id) {
+  return `${location.origin}${location.pathname}${location.search}${hairHref(id)}`;
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* пробуем запасной способ */ }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.top = "0";
+  field.style.left = "0";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch { copied = false; }
+  field.remove();
+  return copied;
+}
+
+document.getElementById("copyLinkButton").addEventListener("click", async () => {
+  const photo = getPhoto(selectedPhotoId);
+  if (!photo) return;
+  const url = hairShareUrl(photo.id);
+  if (await copyText(url)) {
+    showToast("Ссылка скопирована.");
+  } else {
+    showToast(`Скопируйте ссылку: ${url}`, { duration: 8000 });
+  }
+});
+
 document.getElementById("deleteHairButton").addEventListener("click", event => {
   const photo = getPhoto(selectedPhotoId);
   if (photo) confirmClick(event.currentTarget, "Точно удалить?", () => deleteHair(photo));
