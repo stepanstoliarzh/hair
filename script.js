@@ -238,28 +238,41 @@ async function apiSignOut() {
 
 /* ---------- Данные ---------- */
 
+// У hairstyles две связи с profiles (owner и wearer), поэтому связь для ника автора указана явно.
 const HAIRSTYLE_SELECT = [
-  "id", "owner", "title", "description", "tags", "images", "created_at",
-  "owner_profile:profiles(username)",
+  "id", "owner", "wearer", "title", "description", "tags", "images", "created_at",
+  "owner_profile:profiles!hairstyles_owner_fkey(username)",
   "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,author_profile:profiles(username))"
 ].join(",");
+
+// Колонки, которых может не быть в базе со старой схемой
+const OPTIONAL_COLUMNS = ["wearer", "legacy_author"];
 
 function rest(path, options = {}) {
   return rawRequest(`/rest/v1/${path}`, options);
 }
 
+function withoutColumns(select, columns) {
+  return columns.reduce((result, column) => result.replace(`${column},`, ""), select);
+}
+
 async function apiLoadAll() {
   const people = rest("profiles?select=id,username,is_admin,created_at&order=created_at.asc");
+  let missing = [];
   let rows;
-  try {
-    rows = await rest(`hairstyles?select=${encodeURIComponent(HAIRSTYLE_SELECT)}&order=created_at.desc`);
-  } catch (error) {
-    // База со старой схемой (без колонки legacy_author): грузим без неё
-    if (error.code === "42703" || /legacy_author/.test(error.message)) {
-      rows = await rest(`hairstyles?select=${encodeURIComponent(HAIRSTYLE_SELECT.replace("legacy_author,", ""))}&order=created_at.desc`);
-    } else {
-      people.catch(() => {});
-      throw error;
+  while (!rows) {
+    try {
+      rows = await rest(`hairstyles?select=${encodeURIComponent(withoutColumns(HAIRSTYLE_SELECT, missing))}&order=created_at.desc`);
+    } catch (error) {
+      // База со старой схемой (без новых колонок): убираем недостающие и грузим снова
+      const left = OPTIONAL_COLUMNS.filter(column => !missing.includes(column));
+      const named = left.filter(column => String(error.message || "").includes(column));
+      if (left.length && (named.length || error.code === "42703")) {
+        missing = missing.concat(named.length ? named : left);
+      } else {
+        people.catch(() => {});
+        throw error;
+      }
     }
   }
   return { rows, people: await people };
@@ -365,6 +378,7 @@ function mapHairstyle(row) {
     id: row.id,
     owner: row.owner,
     ownerName: row.owner_profile?.username || "удалённый участник",
+    wearer: row.wearer || null,
     title: row.title,
     description: row.description || "",
     tags: Array.isArray(row.tags) ? row.tags : [],
@@ -421,6 +435,15 @@ function allReviews() {
 
 function myReview(photo) {
   return me ? (photo.reviews || []).find(review => review.authorId === me.id) : null;
+}
+
+// Владелец прически — участник, которому прическу «выдали» в базе (колонка wearer)
+function wearerOf(photo) {
+  return photo?.wearer ? profiles.find(profile => profile.id === photo.wearer) || null : null;
+}
+
+function wornBy(profileId) {
+  return photos.filter(photo => photo.wearer && photo.wearer === profileId);
 }
 
 function canEditPhoto(photo) {
@@ -1194,8 +1217,10 @@ function renderDetail(photo) {
   showDetailImage(photo, 0);
 
   document.getElementById("detailTitle").textContent = photo.title;
+  const wearer = wearerOf(photo);
   document.getElementById("detailOwner").innerHTML =
-    `Добавил(а) <a href="${userHref(photo.ownerName)}">${escapeHtml(photo.ownerName)}</a>${photo.created ? ` · ${formatDate(photo.created)}` : ""}`;
+    `Добавил(а) <a href="${userHref(photo.ownerName)}">${escapeHtml(photo.ownerName)}</a>${photo.created ? ` · ${formatDate(photo.created)}` : ""}` +
+    (wearer ? `<span class="detail-wearer"> · Владелец прически <a href="${userHref(wearer.username)}">${escapeHtml(wearer.username)}</a></span>` : "");
   document.getElementById("detailDescription").textContent =
     photo.description || "Описание пока не добавлено.";
 
@@ -1534,6 +1559,7 @@ function getMembers() {
       count: own.length,
       withText: own.filter(({ review }) => review.text).length,
       added: photos.filter(photo => photo.owner === profile.id).length,
+      worn: wornBy(profile.id),
       avg: scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null,
       last: own.length ? Math.max(...own.map(({ review }) => review.created)) : toTime(profile.created_at)
     };
@@ -1574,7 +1600,7 @@ function renderUsers() {
       <span class="avatar">${escapeHtml(initial(member.name))}</span>
       <span class="top-info">
         <strong>${escapeHtml(member.name)}${me && member.id === me.id ? " <em>(вы)</em>" : ""}</strong>
-        <small>${formatCount(member.count, "оценка", "оценки", "оценок")} · ${formatCount(member.added, "прическа", "прически", "причесок")}</small>
+        <small>${formatCount(member.count, "оценка", "оценки", "оценок")} · ${formatCount(member.added, "прическа", "прически", "причесок")}${member.worn.length ? ` · <span class="wearer-mark">владелец прически</span>` : ""}</small>
       </span>
       <span class="user-side">
         <span class="character-pill">${member.is_admin ? "Админ" : reviewerCharacter(member)}</span>
@@ -1598,6 +1624,7 @@ function renderUser(profile) {
         <h2>${escapeHtml(member.name)}</h2>
         <div class="profile-meta">
           <span class="character-pill">${member.is_admin ? "Админ" : reviewerCharacter(member)}</span>
+          ${member.worn.length ? `<span class="character-pill" id="wearerPill">Владелец прически</span>` : ""}
           <small>на сайте с ${formatDate(toTime(member.created_at))}</small>
           ${isMe ? `<button type="button" class="text-button" id="profileLogoutButton">Выйти из аккаунта</button>` : ""}
         </div>
@@ -1614,6 +1641,26 @@ function renderUser(profile) {
           <small>${favorite.review.score}/67</small>
         </a>` : `<div class="stat-tile"><span>Выше всех оценил(а)</span><strong class="stat-title">—</strong></div>`}
     </div>
+    ${member.worn.length ? `
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">ВЛАДЕЛЕЦ</span>
+          <h3>${isMe ? "Ваши прически" : "Прически участника"}</h3>
+        </div>
+        <span>${formatCount(member.worn.length, "прическа", "прически", "причесок")}</span>
+      </div>
+      <div class="stat-tiles" id="wornHairs">
+        ${member.worn.map(photo => {
+          const score = getAverageScore(photo);
+          const count = photo.reviews?.length || 0;
+          return `
+            <a class="stat-tile link" href="${hairHref(photo.id)}">
+              <span>${score === null ? "Ещё нет оценки" : `${score}/67 · ${getVerdict(score).label}`}</span>
+              <strong class="stat-title">${escapeHtml(photo.title)}</strong>
+              <small>${count ? formatCount(count, "оценка", "оценки", "оценок") : "Будьте первым, кто оценит"}</small>
+            </a>`;
+        }).join("")}
+      </div>` : ""}
   `;
 
   document.getElementById("profileLogoutButton")?.addEventListener("click", logout);

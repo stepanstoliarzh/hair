@@ -166,7 +166,10 @@ function check(name, condition, detail = "") {
       const fakeScore = await post("/rest/v1/reviews", { hairstyle_id: id, accuracy: 1, beauty: 1, appearance: 1, personal: 1, score: 67 });
       const fakeArchive = await post("/rest/v1/reviews", { hairstyle_id: id, author: null, legacy_author: "Fake", accuracy: 9, beauty: 9, appearance: 9, personal: 10 });
       const selfAdmin = await fetch(`${gw}/rest/v1/profiles?id=eq.${session.user.id}`, { method: "PATCH", headers, body: JSON.stringify({ is_admin: true }) });
-      return { patchHair: `${patchHair.status}:${await patchHair.text()}`, first: first.status, second: second.status, fakeScore: fakeScore.status, fakeArchive: fakeArchive.status, selfAdmin: selfAdmin.status };
+      const selfWearerInsert = await post("/rest/v1/hairstyles", { title: "Моя", images: [`${session.user.id}/x.jpg`], wearer: session.user.id });
+      const selfWearerPatch = await fetch(`${gw}/rest/v1/hairstyles?id=eq.${id}`, { method: "PATCH", headers, body: JSON.stringify({ wearer: session.user.id }) });
+      return { patchHair: `${patchHair.status}:${await patchHair.text()}`, first: first.status, second: second.status, fakeScore: fakeScore.status, fakeArchive: fakeArchive.status, selfAdmin: selfAdmin.status,
+        selfWearerInsert: selfWearerInsert.status, selfWearerPatch: selfWearerPatch.status };
     }, { id: hairId, gw: GW });
     check("правка чужой прически через API не проходит", attacks.patchHair === "200:[]", attacks.patchHair);
     check("первая своя оценка через API проходит", attacks.first === 201, String(attacks.first));
@@ -175,6 +178,31 @@ function check(name, condition, detail = "") {
     check("архивную оценку без прав админа вставить нельзя", attacks.fakeArchive === 403, String(attacks.fakeArchive));
     check("назначить себя админом нельзя", attacks.selfAdmin === 403, String(attacks.selfAdmin));
     check("title не изменился", sql(`select title from hairstyles where id = ${hairId}`) === "Textured Crop");
+    check("стать владельцем своей новой прически через API нельзя", attacks.selfWearerInsert === 403, String(attacks.selfWearerInsert));
+    check("стать владельцем чужой прически через API нельзя", attacks.selfWearerPatch >= 400, String(attacks.selfWearerPatch));
+    check("владелец прически не назначился", sql("select count(*) from hairstyles where wearer is not null") === "0");
+
+    // ---------- Аккаунт владельца прически (выдаётся в базе) ----------
+    console.log("Владелец прически");
+    sql(`update hairstyles set wearer = (select id from profiles where username = 'masha_k') where id = ${hairId}`);
+    const viewer = await newPage();
+    await viewer.goto(SITE + `#/hair/${hairId}`); await viewer.waitForTimeout(900);
+    check("на странице прически виден её владелец", (await text(viewer, "#detailOwner")).includes("Владелец прически masha_k"), await text(viewer, "#detailOwner"));
+    await viewer.click("#detailOwner .detail-wearer a"); await settle(viewer);
+    check("ссылка ведёт в профиль владельца", (await viewer.evaluate(() => location.hash)) === "#/user/masha_k");
+    check("в профиле статус «Владелец прически»", await viewer.isVisible("#wearerPill"));
+    check("в профиле список его причесок", (await text(viewer, "#wornHairs")).includes("Textured Crop"));
+    await viewer.goto(SITE + "#/users"); await settle(viewer);
+    check("в списке участников отмечен владелец", (await viewer.$$eval(".user-row", rows => rows.filter(row => row.querySelector(".wearer-mark")).map(row => row.querySelector("strong").textContent))).join() === "masha_k");
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      for (const route of [`#/hair/${hairId}`, "#/user/masha_k"]) {
+        await phone.goto(SITE + route); await phone.waitForTimeout(700);
+        const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+        check(`${colorScheme}: ${route} с владельцем без горизонтальной прокрутки`, !overflow);
+      }
+      await phone.screenshot({ path: path.join(SHOTS, `phone-wearer-${colorScheme}.png`), fullPage: true });
+    }
 
     // ---------- Админ: удаление чужой оценки и перенос старой копии ----------
     console.log("Админ");
@@ -220,6 +248,15 @@ function check(name, condition, detail = "") {
     await guest.setViewportSize({ width: 1280, height: 900 });
     await guest.goto(SITE); await guest.waitForTimeout(500);
     await guest.screenshot({ path: path.join(SHOTS, "desktop-catalog.png"), fullPage: true });
+
+    // ---------- Старая схема базы (без колонки wearer) ----------
+    console.log("Старая схема базы");
+    sql("alter table hairstyles drop column wearer cascade");
+    const legacy = await newPage();
+    await legacy.goto(SITE); await legacy.waitForTimeout(900);
+    check("без колонки wearer каталог загружается", (await legacy.$$eval(".hair-card", cards => cards.length)) >= 1);
+    await legacy.goto(SITE + "#/user/masha_k"); await settle(legacy);
+    check("без колонки wearer профиль открывается без статуса владельца", (await text(legacy, "#userProfile")).includes("masha_k") && !(await legacy.isVisible("#wearerPill")));
 
     check("нет ошибок JavaScript на страницах", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {
