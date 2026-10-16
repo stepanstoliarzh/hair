@@ -39,6 +39,7 @@ let session = null;            // { access_token, refresh_token, expires_at, use
 let loadState = "loading";     // "loading" | "ready" | "error"
 let lastLoadedAt = 0;
 let lastLoadError = null;
+let likesEnabled = true;       // false, если в базе ещё нет таблицы review_likes
 
 let selectedPhotoId = null;
 let draftMain = null;          // { src, path? , data? }
@@ -238,15 +239,15 @@ async function apiSignOut() {
 
 /* ---------- Данные ---------- */
 
-// У hairstyles две связи с profiles (owner и wearer), поэтому связь для ника автора указана явно.
+// У hairstyles две связи с profiles (owner и wearer), поэтому связи для ников указаны явно.
 const HAIRSTYLE_SELECT = [
   "id", "owner", "wearer", "title", "description", "tags", "images", "created_at",
   "owner_profile:profiles!hairstyles_owner_fkey(username)",
-  "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,author_profile:profiles(username))"
+  "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,review_likes(user_id),author_profile:profiles!reviews_author_fkey(username))"
 ].join(",");
 
-// Колонки, которых может не быть в базе со старой схемой
-const OPTIONAL_COLUMNS = ["wearer", "legacy_author"];
+// Колонки (и связанная таблица лайков), которых может не быть в базе со старой схемой
+const OPTIONAL_COLUMNS = ["wearer", "legacy_author", "review_likes(user_id)"];
 
 function rest(path, options = {}) {
   return rawRequest(`/rest/v1/${path}`, options);
@@ -266,8 +267,8 @@ async function apiLoadAll() {
     } catch (error) {
       // База со старой схемой (без новых колонок): убираем недостающие и грузим снова
       const left = OPTIONAL_COLUMNS.filter(column => !missing.includes(column));
-      const named = left.filter(column => String(error.message || "").includes(column));
-      if (left.length && (named.length || error.code === "42703")) {
+      const named = left.filter(column => String(error.message || "").includes(column.split("(")[0]));
+      if (left.length && (named.length || error.code === "42703" || error.code === "PGRST200")) {
         missing = missing.concat(named.length ? named : left);
       } else {
         people.catch(() => {});
@@ -275,7 +276,7 @@ async function apiLoadAll() {
       }
     }
   }
-  return { rows, people: await people };
+  return { rows, people: await people, missing };
 }
 
 async function apiUsernameTaken(username) {
@@ -300,6 +301,14 @@ async function apiUpdate(table, id, changes) {
     headers: { Prefer: "return=representation" }
   });
   if (!rows.length) throw new ApiError("forbidden", 403, "no_rows");
+}
+
+async function apiLike(reviewId) {
+  await rest("review_likes", { method: "POST", body: { review_id: reviewId } });
+}
+
+async function apiUnlike(reviewId) {
+  await rest(`review_likes?review_id=eq.${encodeURIComponent(reviewId)}&user_id=eq.${encodeURIComponent(me.id)}`, { method: "DELETE" });
 }
 
 async function apiDelete(table, id) {
@@ -398,13 +407,15 @@ function mapHairstyle(row) {
       personal: review.personal,
       score: review.score,
       created: toTime(review.created_at),
-      edited: review.edited_at ? toTime(review.edited_at) : null
+      edited: review.edited_at ? toTime(review.edited_at) : null,
+      likes: (review.review_likes || []).map(like => like.user_id)
     }))
   };
 }
 
 async function refreshData() {
-  const { rows, people } = await apiLoadAll();
+  const { rows, people, missing } = await apiLoadAll();
+  likesEnabled = !missing.includes("review_likes(user_id)");
   photos = rows.map(mapHairstyle);
   profiles = people;
   me = session ? profiles.find(profile => profile.id === session.user.id) || null : null;
@@ -772,8 +783,29 @@ function reviewCardHtml(review, photo, { withPhoto = false, actions = false } = 
         <div class="review-metrics">
           ${criteria.map(({ key, short, max }) => `<span>${short} <b>${review[key]}/${max}</b></span>`).join("")}
         </div>
+        ${likesEnabled ? reviewLikesHtml(review, photo) : ""}
       </div>
     </article>
+  `;
+}
+
+// Лайки рецензии: кнопка с числом отметок и пометка, если отметил владелец прически
+function reviewLikesHtml(review, photo) {
+  const likes = review.likes || [];
+  const count = likes.length;
+  const liked = Boolean(me && likes.includes(me.id));
+  const own = Boolean(me && review.authorId === me.id);
+  const wearerLiked = Boolean(photo?.wearer && likes.includes(photo.wearer));
+  const label = own ? "Отметки вашей рецензии" : liked ? "Убрать отметку «нравится»" : "Отметить «нравится»";
+
+  return `
+    <div class="review-likes">
+      <button type="button" class="review-like${liked ? " active" : ""}" data-like-review-id="${review.id}"
+        aria-pressed="${liked}" aria-label="${label}" title="${label}"${own ? " disabled" : ""}>
+        <span aria-hidden="true">${liked ? "♥" : "♡"}</span>${count ? `<b>${count}</b>` : ""}
+      </button>
+      ${wearerLiked ? `<span class="owner-like" title="Рецензию отметил владелец прически">♥ Нравится владельцу прически</span>` : ""}
+    </div>
   `;
 }
 
@@ -2279,6 +2311,41 @@ async function submitReview() {
   }
 }
 
+let likeBusy = false;
+
+// Перерисовываем только блок лайков, чтобы страница не прыгала наверх
+function updateLikeViews({ review, photo }) {
+  document.querySelectorAll(`[data-like-review-id="${review.id}"]`).forEach(button => {
+    const box = button.closest(".review-likes");
+    if (box) box.outerHTML = reviewLikesHtml(review, photo).trim();
+  });
+}
+
+async function toggleLike(reviewId) {
+  if (!requireAuth(location.hash || "#/", "Войдите, чтобы отмечать рецензии.")) return;
+  const found = allReviews().find(({ review }) => review.id === reviewId);
+  if (!found || likeBusy || found.review.authorId === me.id) return;
+
+  const { review } = found;
+  const liked = review.likes.includes(me.id);
+  likeBusy = true;
+  // Сразу показываем результат, при ошибке — возвращаем как было
+  review.likes = liked ? review.likes.filter(id => id !== me.id) : [...review.likes, me.id];
+  updateLikeViews(found);
+  try {
+    if (liked) await apiUnlike(reviewId);
+    else await apiLike(reviewId);
+  } catch (error) {
+    if (error.code !== "23505") {
+      review.likes = liked ? [...review.likes, me.id] : review.likes.filter(id => id !== me.id);
+      showToast(humanError(error), { duration: 6000 });
+      updateLikeViews(found);
+    }
+  } finally {
+    likeBusy = false;
+  }
+}
+
 async function deleteReview(photo, reviewId) {
   try {
     await apiDelete("reviews", reviewId);
@@ -2445,6 +2512,13 @@ document.addEventListener("click", event => {
       event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   navigate(link.getAttribute("href"));
+});
+
+document.addEventListener("click", event => {
+  const likeButton = event.target.closest("[data-like-review-id]");
+  if (!likeButton || likeButton.disabled) return;
+  event.preventDefault();
+  toggleLike(Number(likeButton.dataset.likeReviewId));
 });
 
 document.getElementById("toastAction").addEventListener("click", () => {
