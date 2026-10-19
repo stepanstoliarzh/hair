@@ -85,6 +85,29 @@ function check(name, condition, detail = "") {
     const guest = await newPage();
     await guest.goto(SITE); await settle(guest);
     check("пустой каталог виден гостю", (await text(guest, ".empty-catalog strong")) === "Каталог пока пуст");
+    // ---------- Иконка сайта и превью ссылки ----------
+    const head = await guest.evaluate(() => {
+      const attr = (selector, name) => document.querySelector(selector)?.getAttribute(name) || "";
+      return {
+        icon: attr('link[rel="icon"]', "href"), apple: attr('link[rel="apple-touch-icon"]', "href"),
+        ogImage: attr('meta[property="og:image"]', "content"), ogTitle: attr('meta[property="og:title"]', "content"),
+        ogDescription: attr('meta[property="og:description"]', "content"), card: attr('meta[name="twitter:card"]', "content"),
+        themeColors: document.querySelectorAll('meta[name="theme-color"]').length,
+      };
+    });
+    const fetched = await guest.evaluate(async files => Promise.all(files.map(async file => {
+      const response = await fetch(file);
+      return { ok: response.ok, type: response.headers.get("content-type") || "", body: await response.text() };
+    })), [head.icon, head.apple]);
+    check("иконка сайта (SVG) отдаётся", fetched[0].ok && fetched[0].type.includes("svg") && fetched[0].body.includes("<svg"), head.icon);
+    check("иконка для iPhone отдаётся", fetched[1].ok && fetched[1].type.includes("png"), head.apple);
+    const pngSize = file => { const data = fs.readFileSync(path.join(__dirname, "..", file)); return `${data.readUInt32BE(16)}x${data.readUInt32BE(20)}`; };
+    check("иконка для iPhone 180×180", pngSize(head.apple) === "180x180", pngSize(head.apple));
+    check("превью ссылки: полный адрес картинки og-image.png 1200×630",
+      /^https:\/\/[^/]+\/.*og-image\.png$/.test(head.ogImage) && pngSize("og-image.png") === "1200x630", head.ogImage);
+    check("превью ссылки: заголовок, описание, большая карточка, цвет панели в обеих темах",
+      head.ogTitle.includes("HairRate") && head.ogDescription.length > 0 && head.card === "summary_large_image" && head.themeColors === 2);
+
     await guest.click("#openCreateButton"); await settle(guest);
     check("добавление без входа ведёт на вход", (await guest.evaluate(() => location.hash)) === "#/login");
 

@@ -99,7 +99,7 @@ PG_HOST="$WORK" PG_PORT="$PG_PORT" PG_DB=hairrate GW_PORT="$GW_PORT" PGREST_URL=
   python3 "$ROOT/tests/gateway.py" > "$WORK/gateway.log" 2>&1 & PIDS+=($!)
 
 mkdir -p "$WORK/site"
-cp "$ROOT/index.html" "$ROOT/style.css" "$ROOT/script.js" "$WORK/site/"
+cp "$ROOT/index.html" "$ROOT/style.css" "$ROOT/script.js" "$ROOT/favicon.svg" "$ROOT/apple-touch-icon.png" "$ROOT/og-image.png" "$WORK/site/"
 printf 'window.HAIRRATE_CONFIG = { supabaseUrl: "http://localhost:%s", supabaseKey: "sb_publishable__TEST" };\n' "$GW_PORT" > "$WORK/site/config.js"
 python3 -m http.server "$SITE_PORT" --bind 127.0.0.1 --directory "$WORK/site" > /dev/null 2>&1 & PIDS+=($!)
 
