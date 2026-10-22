@@ -2396,6 +2396,11 @@ input[type="range"]:focus-visible,
 
 .profile-meta small { color: var(--faint); font-size: 11px; }
 
+/* Смена ника в своём профиле */
+.rename-form { max-width: 460px; margin: -4px 0 28px; }
+.rename-form .field { margin-bottom: 0; }
+.rename-form .form-error { margin: 12px 0 0; }
+
 @media (max-width: 650px) {
   .header-actions { flex-wrap: wrap; }
   .header-actions .add-button { flex: 1 1 100%; order: 3; }

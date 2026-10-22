@@ -363,6 +363,66 @@ function check(name, condition, detail = "") {
     const members = await masha.$$eval(".user-row strong", items => items.map(item => item.textContent));
     check("архивные ники не попадают в участники", !members.some(name => name.startsWith("Маша")), members.join(", "));
 
+    // ---------- Смена ника ----------
+    console.log("Смена ника");
+    const stepanId = sql("select id from profiles where username = 'Степан'");
+    const mashaId = sql("select id from profiles where username = 'masha_k'");
+    const stepanStuff = () => sql(`select (select count(*) from reviews where author = '${stepanId}') || '/' || (select count(*) from hairstyles where owner = '${stepanId}')`);
+    const stuffBefore = stepanStuff();
+    await guest.goto(SITE + "#/user/masha_k"); await guest.reload(); await guest.waitForTimeout(900);
+    check("в чужом профиле нет «Сменить ник»", !(await guest.$("#renameButton")));
+    await guest.goto(SITE + `#/user/${encodeURIComponent("Степан")}`); await settle(guest);
+    check("в своём профиле есть «Сменить ник», форма скрыта", await guest.isVisible("#renameButton") && !(await guest.isVisible("#renameForm")));
+    await guest.click("#renameButton");
+    check("форма открывается с текущим ником", await guest.isVisible("#renameForm") && (await guest.inputValue("#renameInput")) === "Степан");
+    await guest.press("#renameInput", "Escape");
+    check("Escape закрывает форму", !(await guest.isVisible("#renameForm")));
+    await guest.click("#renameButton");
+    await guest.fill("#renameInput", "a b"); await guest.click("#renameSubmit"); await settle(guest);
+    check("неверный ник отклоняется", (await text(guest, "#renameError")).startsWith("Ник:"));
+    await guest.fill("#renameInput", "MASHA_K"); await guest.click("#renameSubmit"); await settle(guest);
+    check("занятый ник (в другом регистре) отклоняется", (await text(guest, "#renameError")).includes("занят") && sql(`select username from profiles where id = '${stepanId}'`) === "Степан");
+    const bypass = await guest.evaluate(async ({ mashaId, stepanId }) => {
+      const out = {};
+      try { out.foreign = (await rest(`profiles?id=eq.${mashaId}&select=id`, { method: "PATCH", body: { username: "hacked" }, headers: { Prefer: "return=representation" } })).length; }
+      catch (error) { out.foreign = `ошибка ${error.status}`; }
+      try { await rest(`profiles?id=eq.${stepanId}&select=id`, { method: "PATCH", body: { is_admin: true }, headers: { Prefer: "return=representation" } }); out.admin = "прошло"; }
+      catch (error) { out.admin = `ошибка ${error.status}`; }
+      try { await rest(`profiles?id=eq.${stepanId}&select=id`, { method: "PATCH", body: { username: "masha_K" }, headers: { Prefer: "return=representation" } }); out.dup = "прошло"; }
+      catch (error) { out.dup = error.code; }
+      return out;
+    }, { mashaId, stepanId });
+    check("через API чужой ник не поменять", bypass.foreign === 0 && sql(`select username from profiles where id = '${mashaId}'`) === "masha_k", JSON.stringify(bypass));
+    check("через API себе админа не выдать", bypass.admin !== "прошло" && sql(`select is_admin from profiles where id = '${stepanId}'`) === "f", JSON.stringify(bypass));
+    check("через API занятый ник не взять", bypass.dup === "23505", JSON.stringify(bypass));
+    await guest.fill("#renameInput", "Stepan_S"); await guest.click("#renameSubmit"); await guest.waitForTimeout(900);
+    check("ник сменён в базе", sql(`select username from profiles where id = '${stepanId}'`) === "Stepan_S");
+    check("после смены — профиль по новому адресу, ник в шапке",
+      (await guest.evaluate(() => location.hash)) === "#/user/Stepan_S" && (await text(guest, "#userProfile h2")) === "Stepan_S" &&
+      (await text(guest, "#meChip")).includes("Stepan_S") && !(await guest.isVisible("#renameForm")), await guest.evaluate(() => location.hash));
+    check("уведомление о смене ника", (await text(guest, "#toastText")).includes("Stepan_S"));
+    check("оценки и прически остались за участником", stepanStuff() === stuffBefore && !stuffBefore.endsWith("/0"), `${stuffBefore} → ${stepanStuff()}`);
+    await guest.goto(SITE + `#/hair/${hairId}`); await settle(guest);
+    check("на странице прически — новый ник", (await text(guest, "#detailOwner")).includes("Stepan_S") && !(await text(guest, "#detailOwner")).includes("Степан"), await text(guest, "#detailOwner"));
+    await guest.goto(SITE + `#/user/${encodeURIComponent("Степан")}`); await settle(guest);
+    check("старый адрес профиля ведёт к участникам", (await guest.evaluate(() => location.hash)) === "#/users");
+    await guest.goto(SITE + "#/user/Stepan_S"); await settle(guest);
+    await guest.click("#renameButton");
+    await guest.fill("#renameInput", "stepan_s"); await guest.click("#renameSubmit"); await guest.waitForTimeout(900);
+    check("можно сменить только регистр своего ника", sql(`select username from profiles where id = '${stepanId}'`) === "stepan_s" && (await guest.evaluate(() => location.hash)) === "#/user/stepan_s");
+    const stepanSession = await guest.evaluate(() => localStorage.getItem("hairrate_session"));
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE);
+      await phone.evaluate(value => { if (value) localStorage.setItem("hairrate_session", value); }, stepanSession);
+      await phone.goto(SITE + "#/user/stepan_s"); await phone.reload(); await phone.waitForTimeout(900);
+      await phone.click("#renameButton");
+      await phone.fill("#renameInput", "x"); await phone.click("#renameSubmit"); await settle(phone);
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      check(`${colorScheme}: смена ника на телефоне без горизонтальной прокрутки`, !overflow && await phone.isVisible("#renameError"), `прокрутка: ${overflow}`);
+      await phone.screenshot({ path: path.join(SHOTS, `phone-rename-${colorScheme}.png`) });
+    }
+
     // ---------- Удаление своей прически ----------
     console.log("Удаление");
     await guest.goto(SITE + `#/hair/${hairId}`); await guest.reload(); await guest.waitForTimeout(900);
