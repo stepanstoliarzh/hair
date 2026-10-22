@@ -1705,10 +1705,24 @@ function renderUser(profile) {
           <span class="character-pill">${member.is_admin ? "Админ" : reviewerCharacter(member)}</span>
           ${member.worn.length ? `<span class="character-pill" id="wearerPill">Владелец прически</span>` : ""}
           <small>на сайте с ${formatDate(toTime(member.created_at))}</small>
+          ${isMe ? `<button type="button" class="text-button" id="renameButton" aria-expanded="false" aria-controls="renameForm">Сменить ник</button>` : ""}
           ${isMe ? `<button type="button" class="text-button" id="profileLogoutButton">Выйти из аккаунта</button>` : ""}
         </div>
       </div>
     </div>
+    ${isMe ? `
+      <form class="rename-form hidden" id="renameForm" novalidate>
+        <div class="field">
+          <span id="renameLabel">Новый ник</span>
+          <div class="tag-add">
+            <input id="renameInput" class="text-input" type="text" maxlength="24" autocomplete="off" spellcheck="false" aria-labelledby="renameLabel" value="${escapeHtml(member.name)}">
+            <button class="text-button" type="submit" id="renameSubmit">Сохранить</button>
+            <button class="text-button" type="button" id="renameCancel">Отмена</button>
+          </div>
+          <small class="field-hint">3–24 символа: буквы, цифры, _ . -  Старые оценки и прически останутся за вами.</small>
+        </div>
+        <p class="form-error hidden" id="renameError" role="alert"></p>
+      </form>` : ""}
     <div class="stat-tiles">
       <div class="stat-tile"><span>Оценок</span><strong>${member.count}</strong></div>
       <div class="stat-tile"><span>Добавил(а) причесок</span><strong>${member.added}</strong></div>
@@ -1743,6 +1757,7 @@ function renderUser(profile) {
   `;
 
   document.getElementById("profileLogoutButton")?.addEventListener("click", logout);
+  if (isMe) bindRenameForm();
 
   document.getElementById("userReviewCount").textContent = member.count ? `последняя — ${formatDate(member.last)}` : "";
 
@@ -1752,6 +1767,84 @@ function renderUser(profile) {
         .map(({ review, photo }) => reviewCardHtml(review, photo, { withPhoto: true }))
         .join("")
     : `<div class="empty-reviews"><span>✦</span><strong>Оценок пока нет</strong><p>${isMe ? "Откройте любую прическу в каталоге и поставьте первую оценку." : "Этот участник ещё ничего не оценивал."}</p></div>`;
+}
+
+/* ---------- Смена ника ----------
+   Право менять только свой ник проверяет база (RLS «profiles: update own» и grant на колонку
+   username); занятость ника — уникальный индекс по lower(username). */
+
+function setRenameOpen(open) {
+  const form = document.getElementById("renameForm");
+  const toggle = document.getElementById("renameButton");
+  if (!form || !toggle) return;
+  form.classList.toggle("hidden", !open);
+  toggle.setAttribute("aria-expanded", String(open));
+  setRenameError("");
+  if (open) {
+    const input = document.getElementById("renameInput");
+    input.value = me?.username || "";
+    input.focus({ preventScroll: true });
+    input.select();
+  } else {
+    toggle.focus({ preventScroll: true });
+  }
+}
+
+function setRenameError(message) {
+  const box = document.getElementById("renameError");
+  if (!box) return;
+  box.textContent = message;
+  box.classList.toggle("hidden", !message);
+}
+
+function bindRenameForm() {
+  const form = document.getElementById("renameForm");
+  document.getElementById("renameButton").addEventListener("click", () => setRenameOpen(form.classList.contains("hidden")));
+  document.getElementById("renameCancel").addEventListener("click", () => setRenameOpen(false));
+  form.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setRenameOpen(false);
+    }
+  });
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    submitRename();
+  });
+}
+
+async function submitRename() {
+  if (!me) return;
+  const username = document.getElementById("renameInput").value.trim();
+  if (!USERNAME_RE.test(username)) {
+    setRenameError("Ник: от 3 до 24 символов, только буквы, цифры и знаки _ . -");
+    return;
+  }
+  if (username === me.username) {
+    setRenameOpen(false);
+    return;
+  }
+
+  const button = document.getElementById("renameSubmit");
+  setBusy(button, true, "Сохраняем…");
+  setRenameError("");
+  try {
+    const sameName = username.toLowerCase() === me.username.toLowerCase();
+    if (!sameName && await apiUsernameTaken(username)) {
+      setRenameError("Этот ник уже занят. Придумайте другой.");
+      return;
+    }
+    await apiUpdate("profiles", me.id, { username });
+    await refreshData();
+    showToast(`Ник изменён: ${me?.username || username}.`);
+    navigate(userHref(me?.username || username), { replace: true });
+  } catch (error) {
+    if (error?.code === "23505") setRenameError("Этот ник уже занят. Придумайте другой.");
+    else if (error?.code === "23514") setRenameError("Ник: от 3 до 24 символов, только буквы, цифры и знаки _ . -");
+    else setRenameError(humanError(error));
+  } finally {
+    if (button.isConnected) setBusy(button, false);
+  }
 }
 
 /* ---------- Сравнение ---------- */
