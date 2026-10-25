@@ -429,6 +429,57 @@ function check(name, condition, detail = "") {
     await guest.click("#deleteHairButton"); await guest.click("#deleteHairButton"); await guest.waitForTimeout(900);
     check("владелец удалил прическу", sql(`select count(*) from hairstyles where id = ${hairId}`) === "0" && (await guest.evaluate(() => location.hash)) === "#/");
 
+    // ---------- «Показать ещё» в каталоге и ленте ----------
+    console.log("Показать ещё");
+    sql("insert into hairstyles (owner, title, images, created_at) " +
+        `select '${stepanId}', 'Пачка ' || n, (select images from hairstyles order by id limit 1), now() - interval '3 days' - n * interval '1 minute' from generate_series(1, 30) n`);
+    sql("insert into reviews (hairstyle_id, legacy_author, text, accuracy, beauty, appearance, personal, created_at) " +
+        "select h.id, 'Гость ' || k, case when k = 1 then 'Текст пачки' else '' end, 5, 6, 7, 8, h.created_at + k * interval '1 second' " +
+        "from hairstyles h, generate_series(1, 2) k where h.title like 'Пачка %'");
+    const totalHair = Number(sql("select count(*) from hairstyles"));
+    const totalReviews = Number(sql("select count(*) from reviews"));
+    const textReviews = Number(sql("select count(*) from reviews where text <> ''"));
+    const cards = page => page.$$eval("#hairGrid .hair-card", items => items.length);
+    const feedCards = page => page.$$eval("#feedList .review-card", items => items.length);
+    await guest.goto(SITE); await guest.reload(); await guest.waitForTimeout(900);
+    check("каталог: сначала 24 прически и кнопка «Показать ещё»",
+      (await cards(guest)) === 24 && await guest.isVisible("#catalogMore .more-button") &&
+      (await text(guest, "#catalogMore")).includes(`Показано 24 из ${totalHair}`), `${await cards(guest)} · ${await text(guest, "#catalogMore")}`);
+    await guest.click("#catalogMore .more-button"); await settle(guest);
+    check("каталог: «Показать ещё» добавляет следующие",
+      (await cards(guest)) === Math.min(48, totalHair) && (await guest.isVisible("#catalogMore")) === totalHair > 48, String(await cards(guest)));
+    await guest.click("#hairGrid .hair-card >> nth=30"); await settle(guest);
+    await guest.goBack(); await settle(guest);
+    check("каталог: после возврата со страницы прически показано столько же", (await cards(guest)) === Math.min(48, totalHair), String(await cards(guest)));
+    await guest.fill("#searchInput", "Пачка"); await settle(guest);
+    check("каталог: поиск начинает список заново",
+      (await cards(guest)) === 24 && (await text(guest, "#catalogMore")).includes("Показано 24 из 30"), await text(guest, "#catalogMore"));
+    await guest.fill("#searchInput", "Пачка 1"); await settle(guest);
+    check("каталог: когда всё показано, кнопки нет", (await cards(guest)) === 11 && !(await guest.isVisible("#catalogMore")), String(await cards(guest)));
+    await guest.fill("#searchInput", ""); await settle(guest);
+    await guest.goto(SITE + "#/reviews"); await settle(guest);
+    check("лента: сначала 30 оценок и кнопка «Показать ещё»",
+      (await feedCards(guest)) === 30 && (await text(guest, "#feedMore")).includes(`Показано 30 из ${totalReviews}`), `${await feedCards(guest)} · ${await text(guest, "#feedMore")}`);
+    await guest.click("#feedMore .more-button"); await settle(guest);
+    check("лента: «Показать ещё» добавляет следующие",
+      (await feedCards(guest)) === Math.min(60, totalReviews) && (await guest.evaluate(() => document.activeElement?.classList.contains("more-button") || !document.querySelector("#feedMore .more-button"))),
+      String(await feedCards(guest)));
+    await guest.click("#feedView label.toggle"); await settle(guest);
+    check("лента: фильтр «Только с текстом» начинает список заново",
+      (await feedCards(guest)) === Math.min(30, textReviews) && (await guest.isVisible("#feedMore")) === textReviews > 30, `${await feedCards(guest)} из ${textReviews}`);
+    await guest.click("#feedView label.toggle"); await settle(guest);
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE); await phone.waitForTimeout(900);
+      await phone.locator("#catalogMore .more-button").scrollIntoViewIfNeeded();
+      const box = await phone.locator("#catalogMore .more-button").boundingBox();
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      check(`${colorScheme}: «Показать ещё» на телефоне помещается без горизонтальной прокрутки`, !overflow && box && box.x >= 0 && box.x + box.width <= 375, `прокрутка: ${overflow}`);
+      await phone.screenshot({ path: path.join(SHOTS, `phone-more-${colorScheme}.png`) });
+      await phone.goto(SITE + "#/reviews"); await phone.waitForTimeout(500);
+      check(`${colorScheme}: лента с «Показать ещё» на телефоне`, await phone.isVisible("#feedMore .more-button") && !(await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
+    }
+
     // ---------- Вёрстка на телефоне ----------
     console.log("Телефон, обе темы");
     for (const colorScheme of ["light", "dark"]) {

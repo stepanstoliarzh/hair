@@ -1253,6 +1253,24 @@ h3 { margin-top: 4px; font-size: 19px; }
 .feed-list { gap: 10px; }
 .feed-list .review-card { margin-bottom: 0; }
 
+/* ---------- Показать ещё ---------- */
+
+.more-row {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.more-row .more-button {
+  width: min(100%, 320px);
+}
+
+.more-count {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ---------- Формы ---------- */
 
 .form-card,
