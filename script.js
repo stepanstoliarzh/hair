@@ -57,6 +57,10 @@ let tagFilter = null;
 let draftTags = [];
 let topPeriod = "all";
 let feedTextOnly = false;
+const CATALOG_PAGE = 24;
+const FEED_PAGE = 30;
+let catalogLimit = CATALOG_PAGE;
+let feedLimit = FEED_PAGE;
 let catalogScroll = 0;
 let authMode = "login";
 let afterLoginHash = "#/";
@@ -1184,8 +1188,30 @@ function renderTagFilter() {
   `;
 }
 
+function renderMoreButton(boxId, shown, total, page) {
+  const box = document.getElementById(boxId);
+  const rest = total - shown;
+  if (rest <= 0) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <button type="button" class="secondary-button more-button">Показать ещё ${Math.min(page, rest)}</button>
+    <span class="more-count">Показано ${shown} из ${total}</span>
+  `;
+}
+
+function showMore(boxId, render) {
+  render();
+  const button = document.querySelector(`#${boxId} .more-button`);
+  if (button) button.focus({ preventScroll: true });
+}
+
 function renderCatalog() {
   hairGrid.innerHTML = "";
+  renderMoreButton("catalogMore", 0, 0, CATALOG_PAGE);
   document.getElementById("catalogCount").textContent =
     formatCount(photos.length, "образ", "образа", "образов");
   document.getElementById("catalogToolbar").classList.toggle("hidden", photos.length === 0);
@@ -1214,7 +1240,10 @@ function renderCatalog() {
     return;
   }
 
-  visible.forEach(photo => {
+  catalogLimit = Math.max(CATALOG_PAGE, catalogLimit);
+  renderMoreButton("catalogMore", Math.min(catalogLimit, visible.length), visible.length, CATALOG_PAGE);
+
+  visible.slice(0, catalogLimit).forEach(photo => {
     const score = getAverageScore(photo);
     const count = photo.reviews?.length || 0;
     const tags = tagsText(photo);
@@ -1613,6 +1642,7 @@ function renderFeed() {
     : "";
 
   const box = document.getElementById("feedList");
+  renderMoreButton("feedMore", Math.min(feedLimit, items.length), items.length, FEED_PAGE);
 
   if (!items.length) {
     box.innerHTML = feedTextOnly && allReviews().length
@@ -1621,7 +1651,7 @@ function renderFeed() {
     return;
   }
 
-  box.innerHTML = items.map(({ review, photo }) => reviewCardHtml(review, photo, { withPhoto: true })).join("");
+  box.innerHTML = items.slice(0, feedLimit).map(({ review, photo }) => reviewCardHtml(review, photo, { withPhoto: true })).join("");
 }
 
 /* ---------- Участники ---------- */
@@ -2299,6 +2329,7 @@ async function submitHairstyle() {
       await refreshData();
       searchQuery = "";
       tagFilter = null;
+      catalogLimit = CATALOG_PAGE;
       document.getElementById("searchInput").value = "";
       catalogScroll = 0;
       showToast("Прическа добавлена.");
@@ -2841,6 +2872,7 @@ document.getElementById("tagFilter").addEventListener("click", event => {
   const chip = event.target.closest("[data-tag]");
   if (!chip) return;
   tagFilter = chip.dataset.tag || null;
+  catalogLimit = CATALOG_PAGE;
   renderCatalog();
 });
 
@@ -2848,6 +2880,7 @@ document.getElementById("detailTags").addEventListener("click", event => {
   const chip = event.target.closest("[data-tag]");
   if (!chip) return;
   tagFilter = chip.dataset.tag;
+  catalogLimit = CATALOG_PAGE;
   searchQuery = "";
   document.getElementById("searchInput").value = "";
   catalogScroll = 0;
@@ -2904,6 +2937,7 @@ document.getElementById("reviewForm").addEventListener("submit", event => {
 
 document.getElementById("searchInput").addEventListener("input", event => {
   searchQuery = event.target.value;
+  catalogLimit = CATALOG_PAGE;
   renderCatalog();
 });
 
@@ -2911,6 +2945,7 @@ document.getElementById("sortTabs").addEventListener("click", event => {
   const button = event.target.closest("[data-sort]");
   if (!button) return;
   sortMode = button.dataset.sort;
+  catalogLimit = CATALOG_PAGE;
   document.querySelectorAll("#sortTabs [data-sort]").forEach(item => item.classList.toggle("active", item === button));
   renderCatalog();
 });
@@ -2924,7 +2959,20 @@ document.getElementById("periodTabs").addEventListener("click", event => {
 
 document.getElementById("feedTextOnly").addEventListener("change", event => {
   feedTextOnly = event.target.checked;
+  feedLimit = FEED_PAGE;
   renderFeed();
+});
+
+document.getElementById("catalogMore").addEventListener("click", event => {
+  if (!event.target.closest(".more-button")) return;
+  catalogLimit += CATALOG_PAGE;
+  showMore("catalogMore", renderCatalog);
+});
+
+document.getElementById("feedMore").addEventListener("click", event => {
+  if (!event.target.closest(".more-button")) return;
+  feedLimit += FEED_PAGE;
+  showMore("feedMore", renderFeed);
 });
 
 ["compareA", "compareB"].forEach(id => {
