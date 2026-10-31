@@ -75,7 +75,8 @@ const feedView = document.getElementById("feedView");
 const usersView = document.getElementById("usersView");
 const userView = document.getElementById("userView");
 const compareView = document.getElementById("compareView");
-const allViews = [catalogView, detailView, createView, reviewView, authView, topView, feedView, usersView, userView, compareView];
+const statsView = document.getElementById("statsView");
+const allViews = [catalogView, detailView, createView, reviewView, authView, topView, feedView, usersView, userView, compareView, statsView];
 const hairGrid = document.getElementById("hairGrid");
 
 const fields = {
@@ -987,6 +988,11 @@ function handleRoute() {
       return;
     }
 
+    case "stats":
+      renderStats();
+      showView(statsView, { nav: "stats" });
+      return;
+
     case "compare":
       openCompare(Number(first) || null, Number(second) || null);
       return;
@@ -1037,8 +1043,20 @@ function showView(view, { scrollTo = 0, nav = null } = {}) {
     if (active) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+  revealActiveNav();
 
   window.scrollTo({ top: scrollTo, behavior: "auto" });
+}
+
+// На узком экране меню прокручивается вбок: активный раздел не должен оставаться за краем
+function revealActiveNav() {
+  const nav = document.getElementById("mainNav");
+  const link = nav.querySelector("a.active");
+  if (!link || nav.scrollWidth <= nav.clientWidth) return;
+  const left = link.offsetLeft - nav.offsetLeft;
+  const right = left + link.offsetWidth;
+  if (left < nav.scrollLeft) nav.scrollLeft = left;
+  else if (right > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = right - nav.clientWidth;
 }
 
 /* =====================================================================
@@ -1652,6 +1670,146 @@ function renderFeed() {
   }
 
   box.innerHTML = items.slice(0, feedLimit).map(({ review, photo }) => reviewCardHtml(review, photo, { withPhoto: true })).join("");
+}
+
+/* ---------- Статистика ---------- */
+
+const ACTIVE_LIMIT = 5;
+const CONTROVERSIAL_LIMIT = 3;
+
+// Разброс оценок одной прически: стандартное отклонение баллов (нужно минимум 2 оценки)
+function scoreSpread(photo) {
+  const scores = (photo.reviews || []).map(review => review.score);
+  if (scores.length < 2) return null;
+  const mean = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+  const variance = scores.reduce((sum, score) => sum + (score - mean) ** 2, 0) / scores.length;
+  return { value: Math.sqrt(variance), min: Math.min(...scores), max: Math.max(...scores), count: scores.length };
+}
+
+function verdictDistribution(items) {
+  return VERDICTS.map((verdict, index) => {
+    const upper = index === 0 ? 67 : VERDICTS[index - 1].min - 1;
+    const lower = Number.isFinite(verdict.min) ? verdict.min : 4;
+    const count = items.filter(({ review }) => getVerdict(review.score) === verdict).length;
+    return { label: verdict.label, range: `${lower}–${upper}`, count };
+  });
+}
+
+function controversialPhotos() {
+  return photos
+    .map(photo => ({ photo, spread: scoreSpread(photo) }))
+    .filter(item => item.spread && item.spread.max > item.spread.min)
+    .sort((a, b) => b.spread.value - a.spread.value ||
+      (b.spread.max - b.spread.min) - (a.spread.max - a.spread.min) ||
+      b.spread.count - a.spread.count ||
+      b.photo.created - a.photo.created)
+    .slice(0, CONTROVERSIAL_LIMIT);
+}
+
+function renderStats() {
+  const items = allReviews();
+  const box = document.getElementById("statsBody");
+  const withText = items.filter(({ review }) => review.text).length;
+  const average = globalAverage();
+  const roundedAverage = average === null ? null : Math.round(average);
+
+  document.getElementById("statsCount").textContent = items.length
+    ? formatCount(items.length, "оценка", "оценки", "оценок")
+    : "";
+
+  const tiles = `
+    <div class="stat-tiles" id="statsTiles">
+      <div class="stat-tile"><span>Причесок</span><strong>${photos.length}</strong></div>
+      <div class="stat-tile"><span>Оценок</span><strong>${items.length}<small>${withText} с текстом</small></strong></div>
+      <div class="stat-tile"><span>Участников</span><strong>${profiles.length}</strong></div>
+      <div class="stat-tile"><span>Средний балл</span><strong>${roundedAverage === null ? "—" : `${roundedAverage}<small>/67 · ${getVerdict(roundedAverage).label}</small>`}</strong></div>
+    </div>
+  `;
+
+  if (!items.length) {
+    box.innerHTML = tiles + emptyState("◔", "Статистики пока нет", "Она появится, когда у причесок будут первые оценки.");
+    return;
+  }
+
+  const distribution = verdictDistribution(items);
+  const maxCount = Math.max(...distribution.map(row => row.count));
+  const distributionHtml = distribution.map(row => {
+    const share = Math.round((row.count / items.length) * 100);
+    return `
+      <div class="criterion verdict-stat">
+        <div class="criterion-top">
+          <span>${row.label} <small>${row.range}</small></span>
+          <strong>${row.count}<small> · ${share}%</small></strong>
+        </div>
+        <div class="criterion-bar"><i style="width: ${maxCount ? ((row.count / maxCount) * 100).toFixed(1) : 0}%"></i></div>
+      </div>
+    `;
+  }).join("");
+
+  const active = getMembers()
+    .filter(member => member.count > 0)
+    .sort((a, b) => b.count - a.count || b.withText - a.withText || b.last - a.last)
+    .slice(0, ACTIVE_LIMIT);
+  const activeHtml = active.length
+    ? active.map((member, index) => `
+      <a class="user-row" href="${userHref(member.name)}">
+        <span class="top-pos">${String(index + 1).padStart(2, "0")}</span>
+        <span class="avatar">${escapeHtml(initial(member.name))}</span>
+        <span class="top-info">
+          <strong>${escapeHtml(member.name)}${me && member.id === me.id ? " <em>(вы)</em>" : ""}</strong>
+          <small>${formatCount(member.count, "оценка", "оценки", "оценок")} · ${member.withText} с текстом</small>
+        </span>
+        <span class="user-side">
+          <small>в среднем ${Math.round(member.avg)}/67</small>
+        </span>
+      </a>
+    `).join("")
+    : `<p class="stats-note">Пока оценки есть только из старой версии сайта — у них нет аккаунтов участников.</p>`;
+
+  const disputed = controversialPhotos();
+  const disputedHtml = disputed.length
+    ? disputed.map(({ photo, spread }, index) => `
+      <a class="top-row${index === 0 ? " podium" : ""}" href="${hairHref(photo.id)}">
+        <span class="top-pos">${String(index + 1).padStart(2, "0")}</span>
+        <span class="top-thumb"><img src="${escapeHtml(photo.image)}" alt="" loading="lazy"></span>
+        <span class="top-info">
+          <strong>${escapeHtml(photo.title)}</strong>
+          <small>оценки ${spread.min}–${spread.max} · разброс ±${formatDecimal(spread.value)}</small>
+        </span>
+        ${scoreBadge(getAverageScore(photo), { size: "sm" })}
+      </a>
+    `).join("")
+    : `<p class="stats-note">Спорных образов нет: у причесок пока одна оценка или все оценки совпадают.</p>`;
+
+  box.innerHTML = `
+    ${tiles}
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">РАСПРЕДЕЛЕНИЕ</span>
+        <h3>Оценки по вердиктам</h3>
+      </div>
+      <span>доля от всех оценок</span>
+    </div>
+    <div class="criteria stats-block" id="verdictStats">${distributionHtml}</div>
+
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">СООБЩЕСТВО</span>
+        <h3>Самые активные</h3>
+      </div>
+      <span>по числу оценок</span>
+    </div>
+    <div class="users-list stats-block" id="activeMembers">${activeHtml}</div>
+
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">РАЗНОГЛАСИЯ</span>
+        <h3>Самые спорные образы</h3>
+      </div>
+      <span>по разбросу оценок</span>
+    </div>
+    <div class="top-list stats-block" id="controversialList">${disputedHtml}</div>
+  `;
 }
 
 /* ---------- Участники ---------- */

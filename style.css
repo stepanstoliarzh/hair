@@ -378,7 +378,7 @@ h3 { margin-top: 4px; font-size: 19px; }
 }
 
 .catalog-view, .detail-view, .create-view, .review-view,
-.top-view, .feed-view, .users-view, .user-view, .compare-view { margin-bottom: 40px; }
+.top-view, .feed-view, .users-view, .user-view, .compare-view, .stats-view { margin-bottom: 40px; }
 
 /* ---------- Каталог ---------- */
 
@@ -1745,6 +1745,20 @@ input[type="range"]::-moz-range-thumb {
 .stat-tile.link { transition: border-color .15s ease; }
 .stat-tile.link:hover { border-color: var(--ink); }
 
+/* ---------- Статистика ---------- */
+
+.stats-block { margin-bottom: 34px; }
+.stats-block.criteria { margin-bottom: 34px; }
+.verdict-stat .criterion-top span small { margin-left: 4px; color: var(--faint); font-size: 11px; }
+.stats-note {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ---------- Переключатель ---------- */
 
 .toggle {
@@ -2256,17 +2270,26 @@ input[type="range"]:focus-visible,
 }
 
 @media (max-width: 420px) {
-  .main-nav { gap: 14px; }
-  .main-nav a { font-size: 12px; }
   .card-image-wrap { height: 390px; }
   .detail-photo { height: 58vh; min-height: 340px; }
   .detail-title-row { flex-direction: column; gap: 12px; }
   .detail-tools { justify-content: flex-start; }
 }
 
-@media (max-width: 380px) {
-  .main-nav { gap: 11px; }
+/* Шесть разделов меню помещаются в строку и на узком телефоне */
+@media (max-width: 480px) {
+  .main-nav { justify-content: space-between; gap: 10px; }
   .main-nav a { font-size: 11.5px; }
+}
+
+@media (max-width: 380px) {
+  .main-nav { gap: 8px; }
+  .main-nav a { font-size: 11px; }
+}
+
+@media (max-width: 360px) {
+  .main-nav { gap: 6px; }
+  .main-nav a { font-size: 10.5px; }
 }
 
 /* ============================================================
