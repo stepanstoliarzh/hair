@@ -85,6 +85,9 @@ function check(name, condition, detail = "") {
     const guest = await newPage();
     await guest.goto(SITE); await settle(guest);
     check("пустой каталог виден гостю", (await text(guest, ".empty-catalog strong")) === "Каталог пока пуст");
+    await guest.goto(SITE + "#/stats"); await settle(guest);
+    check("статистика без оценок — пустое состояние", (await text(guest, "#statsBody .empty-catalog strong")) === "Статистики пока нет");
+    await guest.goto(SITE); await settle(guest);
     // ---------- Иконка сайта и превью ссылки ----------
     const head = await guest.evaluate(() => {
       const attr = (selector, name) => document.querySelector(selector)?.getAttribute(name) || "";
@@ -480,12 +483,62 @@ function check(name, condition, detail = "") {
       check(`${colorScheme}: лента с «Показать ещё» на телефоне`, await phone.isVisible("#feedMore .more-button") && !(await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
     }
 
+    // ---------- Статистика ----------
+    console.log("Статистика");
+    const packId = n => sql(`select id from hairstyles where title = 'Пачка ${n}'`);
+    sql(`insert into reviews (hairstyle_id, author, text, accuracy, beauty, appearance, personal) values ` +
+        `(${packId(1)}, '${stepanId}', 'Отлично', 9, 9, 9, 10), (${packId(2)}, '${stepanId}', '', 1, 1, 1, 1), ` +
+        `(${packId(1)}, '${mashaId}', '', 1, 1, 1, 1)`);
+    const stepanName = sql(`select username from profiles where id = '${stepanId}'`);
+    const verdictCounts = sql("select count(*) filter (where score >= 60) || ',' || count(*) filter (where score >= 50 and score < 60) || ',' || " +
+      "count(*) filter (where score >= 40 and score < 50) || ',' || count(*) filter (where score >= 30 and score < 40) || ',' || " +
+      "count(*) filter (where score >= 20 and score < 30) || ',' || count(*) filter (where score < 20) from reviews");
+    const mostDisputed = sql("select h.title from hairstyles h join reviews r on r.hairstyle_id = h.id group by h.id " +
+      "having count(*) >= 2 and max(r.score) > min(r.score) order by stddev_pop(r.score) desc, max(r.score) - min(r.score) desc, count(*) desc, h.created_at desc limit 1");
+    await guest.goto(SITE); await guest.reload(); await guest.waitForTimeout(900);
+    await guest.click('#mainNav a[data-nav="stats"]'); await settle(guest);
+    check("раздел «Статистика» открывается из меню", (await guest.evaluate(() => location.hash)) === "#/stats" &&
+      !(await guest.isHidden("#statsView")) && (await text(guest, '#mainNav a.active')) === "Статистика");
+    const tiles = await guest.$$eval("#statsTiles .stat-tile strong", items => items.map(item => item.textContent.replace(/\s+/g, " ").trim()));
+    check("сводка: число причесок, оценок и участников",
+      tiles[0] === sql("select count(*) from hairstyles") && tiles[1].startsWith(sql("select count(*) from reviews")) &&
+      tiles[1].endsWith(`${sql("select count(*) from reviews where text <> ''")} с текстом`) && tiles[2] === sql("select count(*) from profiles"), tiles.join(" | "));
+    const shownCounts = await guest.$$eval("#verdictStats .verdict-stat strong", items => items.map(item => item.firstChild.textContent.trim()).join(","));
+    check("распределение по вердиктам совпадает с базой", shownCounts === verdictCounts, `${shownCounts} / ${verdictCounts}`);
+    const labels = await guest.$$eval("#verdictStats .criterion-top span", items => items.map(item => item.textContent.replace(/\s+/g, " ").trim()).join("; "));
+    check("вердикты по порядку с диапазонами баллов", labels.startsWith("Шедевр 60–67; Отлично 50–59") && labels.endsWith("Провал 4–19"), labels);
+    const active = await guest.$$eval("#activeMembers .user-row strong", items => items.map(item => item.textContent.replace(" (вы)", "").trim()));
+    check("самые активные: по числу оценок", active[0] === stepanName && active[1] === "masha_k" && active.length === 2, active.join(", "));
+    check("у активного участника видно число оценок и с текстом", (await text(guest, "#activeMembers .user-row small")).startsWith("2 оценки · 1 с текстом"), await text(guest, "#activeMembers .user-row small"));
+    const disputed = await text(guest, "#controversialList .top-row strong");
+    check("самый спорный образ — с наибольшим разбросом", disputed === mostDisputed && (await text(guest, "#controversialList .top-row small")).includes("разброс ±"), `${disputed} / ${mostDisputed}`);
+    await guest.click("#controversialList .top-row"); await settle(guest);
+    check("из статистики можно перейти к прическе", (await text(guest, "#detailTitle")) === mostDisputed);
+    await guest.goto(SITE + "#/stats"); await settle(guest);
+    await guest.click("#activeMembers .user-row"); await settle(guest);
+    check("из статистики можно перейти в профиль", (await guest.evaluate(() => decodeURIComponent(location.hash))) === `#/user/${stepanName}`);
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE + "#/stats"); await phone.waitForTimeout(900);
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      const bars = await phone.$$eval("#verdictStats .criterion-bar", items => items.every(item => item.getBoundingClientRect().right <= window.innerWidth));
+      check(`${colorScheme}: статистика на телефоне без горизонтальной прокрутки`, !overflow && bars, `прокрутка: ${overflow}`);
+      const navVisible = await phone.evaluate(() => {
+        const nav = document.getElementById("mainNav").getBoundingClientRect();
+        const link = document.querySelector('#mainNav a[data-nav="stats"]').getBoundingClientRect();
+        return link.left >= nav.left - 1 && link.right <= nav.right + 1;
+      });
+      check(`${colorScheme}: пункт «Статистика» в меню виден на телефоне целиком`, navVisible);
+      await phone.screenshot({ path: path.join(SHOTS, `phone-stats-${colorScheme}.png`), fullPage: true });
+    }
+    await guest.screenshot({ path: path.join(SHOTS, "desktop-stats.png"), fullPage: true });
+
     // ---------- Вёрстка на телефоне ----------
     console.log("Телефон, обе темы");
     for (const colorScheme of ["light", "dark"]) {
       const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
       await phone.goto(SITE); await settle(phone);
-      for (const route of ["#/", "#/top", "#/reviews", "#/users", "#/compare", "#/login"]) {
+      for (const route of ["#/", "#/top", "#/reviews", "#/users", "#/compare", "#/stats", "#/login"]) {
         await phone.goto(SITE + route); await phone.waitForTimeout(350);
         const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
         check(`${colorScheme}: ${route} без горизонтальной прокрутки`, !overflow);
@@ -511,6 +564,8 @@ function check(name, condition, detail = "") {
     sql("notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);
     await legacy.goto(SITE + "#/reviews"); await legacy.reload(); await legacy.waitForTimeout(900);
     check("без таблицы лайков лента без кнопок лайка", (await legacy.$$eval("#feedList .review-card", cards => cards.length)) >= 1 && (await legacy.$$eval(".review-like", items => items.length)) === 0);
+    await legacy.goto(SITE + "#/stats"); await settle(legacy);
+    check("старая схема: статистика открывается", (await legacy.$$eval("#verdictStats .verdict-stat", items => items.length)) === 6);
 
     check("нет ошибок JavaScript на страницах", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {
