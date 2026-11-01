@@ -57,6 +57,8 @@ let tagFilter = null;
 let draftTags = [];
 let topPeriod = "all";
 let feedTextOnly = false;
+let feedAuthor = "";            // ключ участника для фильтра ленты ("" — все)
+let feedVerdict = "";           // название вердикта для фильтра ленты ("" — все)
 const CATALOG_PAGE = 24;
 const FEED_PAGE = 30;
 let catalogLimit = CATALOG_PAGE;
@@ -1647,9 +1649,42 @@ function renderTop() {
 
 /* ---------- Лента ---------- */
 
+// Ключ автора для фильтра: id участника, а для старых оценок без аккаунта — имя
+function feedAuthorKey(review) {
+  return review.authorId ? `id:${review.authorId}` : `name:${authorOf(review)}`;
+}
+
+function renderFeedFilters(reviews) {
+  const authors = new Map();
+  reviews.forEach(({ review }) => {
+    const key = feedAuthorKey(review);
+    const entry = authors.get(key) || { name: authorOf(review), count: 0 };
+    entry.count += 1;
+    authors.set(key, entry);
+  });
+  if (feedAuthor && !authors.has(feedAuthor)) feedAuthor = "";
+  if (feedVerdict && !VERDICTS.some(item => item.label === feedVerdict)) feedVerdict = "";
+
+  const sorted = [...authors.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name, "ru"));
+  const authorSelect = document.getElementById("feedAuthor");
+  authorSelect.innerHTML = `<option value="">Все участники</option>` + sorted
+    .map(([key, { name, count }]) => `<option value="${escapeHtml(key)}">${escapeHtml(name)} · ${count}</option>`).join("");
+  authorSelect.value = feedAuthor;
+
+  const verdictSelect = document.getElementById("feedVerdict");
+  verdictSelect.innerHTML = `<option value="">Все вердикты</option>` + VERDICTS
+    .map(item => `<option value="${escapeHtml(item.label)}">${escapeHtml(item.label)}</option>`).join("");
+  verdictSelect.value = feedVerdict;
+}
+
 function renderFeed() {
-  const items = allReviews()
+  const all = allReviews();
+  renderFeedFilters(all);
+  const filtered = Boolean(feedAuthor || feedVerdict);
+  const items = all
     .filter(({ review }) => !feedTextOnly || review.text)
+    .filter(({ review }) => !feedAuthor || feedAuthorKey(review) === feedAuthor)
+    .filter(({ review }) => !feedVerdict || getVerdict(review.score)?.label === feedVerdict)
     .sort((a, b) => b.review.created - a.review.created);
 
   document.getElementById("feedTextOnly").checked = feedTextOnly;
@@ -1663,9 +1698,11 @@ function renderFeed() {
   renderMoreButton("feedMore", Math.min(feedLimit, items.length), items.length, FEED_PAGE);
 
   if (!items.length) {
-    box.innerHTML = feedTextOnly && allReviews().length
-      ? emptyState("✎", "Текстовых рецензий пока нет", "Пока есть только оценки без текста. Снимите фильтр, чтобы их увидеть.")
-      : emptyState("✎", "Лента пока пуста", "Здесь будут появляться все оценки и рецензии, новые сверху.");
+    box.innerHTML = filtered && all.length
+      ? emptyState("✎", "Ничего не нашлось", "Под выбранные фильтры оценок нет. Выберите «Все участники» или «Все вердикты».")
+      : feedTextOnly && all.length
+        ? emptyState("✎", "Текстовых рецензий пока нет", "Пока есть только оценки без текста. Снимите фильтр, чтобы их увидеть.")
+        : emptyState("✎", "Лента пока пуста", "Здесь будут появляться все оценки и рецензии, новые сверху.");
     return;
   }
 
@@ -3117,6 +3154,18 @@ document.getElementById("periodTabs").addEventListener("click", event => {
 
 document.getElementById("feedTextOnly").addEventListener("change", event => {
   feedTextOnly = event.target.checked;
+  feedLimit = FEED_PAGE;
+  renderFeed();
+});
+
+document.getElementById("feedAuthor").addEventListener("change", event => {
+  feedAuthor = event.target.value;
+  feedLimit = FEED_PAGE;
+  renderFeed();
+});
+
+document.getElementById("feedVerdict").addEventListener("change", event => {
+  feedVerdict = event.target.value;
   feedLimit = FEED_PAGE;
   renderFeed();
 });

@@ -1807,6 +1807,19 @@ input[type="range"]::-moz-range-thumb {
 .toggle input:checked + .toggle-track::after { transform: translateX(16px); }
 .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--ink); outline-offset: 2px; }
 
+/* ---------- Фильтры ленты ---------- */
+
+.feed-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 18px;
+}
+
+.feed-filters .select { width: auto; max-width: 240px; padding-top: 9px; padding-bottom: 9px; }
+.feed-filters .toggle { margin-bottom: 0; }
+
 /* ---------- Сравнение ---------- */
 
 .compare-pickers {
@@ -2235,6 +2248,7 @@ input[type="range"]:focus-visible,
   .hero-info { padding: 22px 20px 24px; }
   .hero-criteria { grid-template-columns: 1fr; }
   .compare-pickers { grid-template-columns: 1fr; gap: 8px; }
+  .feed-filters .select { flex: 1 1 140px; max-width: none; }
   .compare-vs { text-align: center; }
 }
 

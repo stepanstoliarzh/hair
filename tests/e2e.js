@@ -471,6 +471,28 @@ function check(name, condition, detail = "") {
     check("лента: фильтр «Только с текстом» начинает список заново",
       (await feedCards(guest)) === Math.min(30, textReviews) && (await guest.isVisible("#feedMore")) === textReviews > 30, `${await feedCards(guest)} из ${textReviews}`);
     await guest.click("#feedView label.toggle"); await settle(guest);
+    // Фильтр ленты по участнику и по вердикту
+    const feedAuthors = page => page.$$eval("#feedList .review-author", items => [...new Set(items.map(item => { const copy = item.cloneNode(true); copy.querySelectorAll(".avatar, em").forEach(node => node.remove()); return copy.textContent.trim(); }))]);
+    const feedVerdicts = page => page.$$eval("#feedList .review-score", items => [...new Set(items.map(item => item.textContent.split("·").pop().trim()))]);
+    check("лента: в фильтре участников есть «Все участники» и авторы с числом оценок",
+      (await guest.$eval("#feedAuthor option", option => option.textContent)) === "Все участники" &&
+      (await guest.$$eval("#feedAuthor option", options => options.some(option => option.value === "name:Гость 1" && option.textContent === "Гость 1 · 30"))));
+    await guest.selectOption("#feedAuthor", "name:Гость 1"); await settle(guest);
+    check("лента: фильтр по участнику показывает только его оценки и начинает список заново",
+      (await feedCards(guest)) === 30 && JSON.stringify(await feedAuthors(guest)) === JSON.stringify(["Гость 1"]) &&
+      (await text(guest, "#feedStats")).startsWith("30 оценок") && !(await guest.isVisible("#feedMore")),
+      `${await feedCards(guest)} · ${await feedAuthors(guest)} · ${await text(guest, "#feedStats")}`);
+    await guest.selectOption("#feedVerdict", "Шедевр"); await settle(guest);
+    check("лента: пустой результат фильтров с подсказкой", (await feedCards(guest)) === 0 && (await text(guest, "#feedList")).includes("Ничего не нашлось"));
+    await guest.selectOption("#feedAuthor", ""); await guest.selectOption("#feedVerdict", "Хорошо"); await settle(guest);
+    const goodReviews = Number(sql("select count(*) from reviews where score between 40 and 49"));
+    check("лента: фильтр по вердикту показывает только этот вердикт",
+      (await feedCards(guest)) === Math.min(30, goodReviews) && JSON.stringify(await feedVerdicts(guest)) === JSON.stringify(["Хорошо"]) &&
+      (await text(guest, "#feedMore")).includes(`из ${goodReviews}`), `${await feedCards(guest)} из ${goodReviews} · ${await feedVerdicts(guest)}`);
+    await guest.goto(SITE + "#/"); await settle(guest); await guest.goto(SITE + "#/reviews"); await settle(guest);
+    check("лента: фильтр сохраняется при возврате в ленту", (await guest.inputValue("#feedVerdict")) === "Хорошо");
+    await guest.selectOption("#feedVerdict", ""); await settle(guest);
+    check("лента: снятие фильтров возвращает все оценки", (await feedCards(guest)) === 30 && (await text(guest, "#feedMore")).includes(`из ${totalReviews}`));
     for (const colorScheme of ["light", "dark"]) {
       const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
       await phone.goto(SITE); await phone.waitForTimeout(900);
@@ -481,6 +503,12 @@ function check(name, condition, detail = "") {
       await phone.screenshot({ path: path.join(SHOTS, `phone-more-${colorScheme}.png`) });
       await phone.goto(SITE + "#/reviews"); await phone.waitForTimeout(500);
       check(`${colorScheme}: лента с «Показать ещё» на телефоне`, await phone.isVisible("#feedMore .more-button") && !(await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
+      await phone.selectOption("#feedVerdict", "Хорошо"); await phone.waitForTimeout(300);
+      const filterBoxes = await phone.$$eval(".feed-filters .select, .feed-filters .toggle", items => items.map(item => { const r = item.getBoundingClientRect(); return [r.left, r.right]; }));
+      check(`${colorScheme}: фильтры ленты на телефоне помещаются без горизонтальной прокрутки`,
+        filterBoxes.length === 3 && filterBoxes.every(([left, right]) => left >= 0 && right <= 375) &&
+        !(await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), JSON.stringify(filterBoxes));
+      await phone.screenshot({ path: path.join(SHOTS, `phone-feed-filters-${colorScheme}.png`) });
     }
 
     // ---------- Статистика ----------
