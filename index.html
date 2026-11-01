@@ -312,11 +312,15 @@
           </div>
           <span class="catalog-count" id="feedStats"></span>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="feedTextOnly">
-          <span class="toggle-track" aria-hidden="true"></span>
-          <span>Только с текстом</span>
-        </label>
+        <div class="feed-filters">
+          <select id="feedAuthor" class="select" aria-label="Участник"></select>
+          <select id="feedVerdict" class="select" aria-label="Вердикт"></select>
+          <label class="toggle">
+            <input type="checkbox" id="feedTextOnly">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Только с текстом</span>
+          </label>
+        </div>
         <div class="feed-list" id="feedList"></div>
         <div class="more-row hidden" id="feedMore"></div>
       </section>
