@@ -169,6 +169,64 @@ function check(name, condition, detail = "") {
       await phone.screenshot({ path: path.join(SHOTS, `phone-hair-${colorScheme}.png`) });
     }
 
+    // ---------- Лайтбокс: фокус и свайп вниз ----------
+    console.log("Лайтбокс");
+    const viewerLb = await newPage();
+    await viewerLb.goto(SITE + `#/hair/${hairId}`); await viewerLb.waitForTimeout(900);
+    await viewerLb.focus("#detailZoom");
+    await viewerLb.keyboard.press("Enter"); await settle(viewerLb);
+    const activeId = page => page.evaluate(() => document.activeElement && document.activeElement.id);
+    check("лайтбокс открывается с клавиатуры, фокус на «Закрыть»", (await viewerLb.isVisible("#lightbox")) && (await activeId(viewerLb)) === "lightboxClose");
+    const tabbed = [];
+    for (let i = 0; i < 4; i++) { await viewerLb.keyboard.press("Tab"); tabbed.push(await activeId(viewerLb)); }
+    check("Tab ходит по кругу внутри лайтбокса", tabbed.join(",") === "lightboxPrev,lightboxNext,lightboxClose,lightboxPrev", tabbed.join(","));
+    await viewerLb.keyboard.press("Shift+Tab"); await viewerLb.keyboard.press("Shift+Tab");
+    check("Shift+Tab тоже не выходит из лайтбокса", (await activeId(viewerLb)) === "lightboxNext", await activeId(viewerLb));
+    await viewerLb.evaluate(() => document.getElementById("copyLinkButton").focus());
+    check("фокус, ушедший наружу, возвращается в лайтбокс", (await activeId(viewerLb)) === "lightboxClose");
+    await viewerLb.keyboard.press("Escape"); await settle(viewerLb);
+    check("после закрытия фокус возвращается на кнопку увеличения", !(await viewerLb.isVisible("#lightbox")) && (await activeId(viewerLb)) === "detailZoom", await activeId(viewerLb));
+    await viewerLb.click("#detailPhoto", { position: { x: 30, y: 30 } }); await settle(viewerLb);
+    await viewerLb.click("#lightboxClose"); await settle(viewerLb);
+    check("закрытие мышью тоже возвращает фокус на страницу", (await activeId(viewerLb)) === "detailZoom");
+
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE + `#/hair/${hairId}`); await phone.waitForTimeout(900);
+      const cdp = await phone.context().newCDPSession(phone);
+      const swipe = async (x0, y0, x1, y1, release = true) => {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: x0, y: y0 }] });
+        for (let step = 1; step <= 6; step++) {
+          const x = x0 + (x1 - x0) * step / 6, y = y0 + (y1 - y0) * step / 6;
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+        }
+        if (release) await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await phone.waitForTimeout(300);
+      };
+      await phone.tap("#detailPhoto"); await settle(phone);
+      check(`${colorScheme}: лайтбокс открывается касанием`, await phone.isVisible("#lightbox"));
+      await swipe(187, 300, 187, 460, false);
+      const dragging = await phone.evaluate(() => ({ transform: document.getElementById("lightboxImage").style.transform, opacity: Number(document.getElementById("lightbox").style.opacity) }));
+      check(`${colorScheme}: при свайпе вниз фото едет за пальцем и фон бледнеет`, dragging.transform.includes("translateY") && dragging.opacity < 1, JSON.stringify(dragging));
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      check(`${colorScheme}: лайтбокс на телефоне без горизонтальной прокрутки`, !overflow);
+      await phone.screenshot({ path: path.join(SHOTS, `phone-lightbox-drag-${colorScheme}.png`) });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }); await phone.waitForTimeout(400);
+      check(`${colorScheme}: свайп вниз закрывает лайтбокс`, !(await phone.isVisible("#lightbox")));
+      check(`${colorScheme}: после закрытия свайпом страница снова прокручивается`, (await phone.evaluate(() => document.body.style.overflow)) === "");
+
+      await phone.tap("#detailPhoto"); await settle(phone);
+      await swipe(187, 300, 187, 340);
+      const restored = await phone.evaluate(() => ({ transform: document.getElementById("lightboxImage").style.transform, opacity: document.getElementById("lightbox").style.opacity }));
+      check(`${colorScheme}: короткий свайп вниз не закрывает, фото возвращается на место`, (await phone.isVisible("#lightbox")) && restored.transform === "" && restored.opacity === "", JSON.stringify(restored));
+      await swipe(187, 400, 187, 200);
+      check(`${colorScheme}: свайп вверх не закрывает`, await phone.isVisible("#lightbox"));
+      const before = await text(phone, "#lightboxCounter");
+      await swipe(300, 400, 80, 410);
+      const after = await text(phone, "#lightboxCounter");
+      check(`${colorScheme}: свайп влево по-прежнему листает фото`, before === "1 / 2" && after === "2 / 2" && (await phone.isVisible("#lightbox")), `${before} → ${after}`);
+    }
+
     // ---------- Второй участник и права ----------
     console.log("Второй участник и права доступа");
     const masha = await newPage();

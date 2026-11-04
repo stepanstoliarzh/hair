@@ -2100,7 +2100,8 @@ input[type="range"]::-moz-range-thumb {
   padding: calc(56px + env(safe-area-inset-top, 0px)) 72px calc(56px + env(safe-area-inset-bottom, 0px));
   background: var(--lightbox-bg);
   color: var(--lightbox-fg);
-  touch-action: pan-y;
+  touch-action: none;
+  transition: opacity .2s ease;
 }
 
 .lightbox img {
@@ -2109,7 +2110,11 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
   object-fit: contain;
   user-select: none;
+  transition: transform .2s ease;
 }
+
+.lightbox.dragging,
+.lightbox.dragging img { transition: none; }
 
 .lightbox-close,
 .lightbox-nav {
