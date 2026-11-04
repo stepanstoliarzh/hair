@@ -51,6 +51,7 @@ let editingPhotoId = null;
 let editingReviewId = null;
 let detailImageIndex = 0;
 let lightboxIndex = 0;
+let lightboxReturnFocus = null;
 let searchQuery = "";
 let sortMode = "new";
 let tagFilter = null;
@@ -1438,6 +1439,7 @@ function openLightbox(index) {
   const photo = getPhoto(selectedPhotoId);
   if (!photo) return;
   const lightbox = document.getElementById("lightbox");
+  if (!isLightboxOpen()) lightboxReturnFocus = document.activeElement;
   lightbox.classList.toggle("single", getImages(photo).length < 2);
   lightbox.classList.remove("hidden");
   document.body.style.overflow = "hidden";
@@ -1449,9 +1451,47 @@ function closeLightbox() {
   const lightbox = document.getElementById("lightbox");
   if (lightbox.classList.contains("hidden")) return;
   lightbox.classList.add("hidden");
+  resetLightboxDrag();
   document.body.style.overflow = "";
   const photo = getPhoto(selectedPhotoId);
   if (photo && !detailView.classList.contains("hidden")) showDetailImage(photo, lightboxIndex);
+  // Фокус — туда, откуда открыли (или на кнопку увеличения, если открыли мышью/пальцем)
+  let target = lightboxReturnFocus;
+  lightboxReturnFocus = null;
+  if (!target || target === document.body || !document.contains(target) || target.closest(".hidden")) {
+    target = detailView.classList.contains("hidden") ? null : document.getElementById("detailZoom");
+  }
+  if (target) target.focus({ preventScroll: true });
+}
+
+function lightboxFocusables() {
+  return [...document.querySelectorAll("#lightbox button")].filter(button => button.offsetParent !== null);
+}
+
+// Удержание фокуса: Tab и Shift+Tab ходят по кругу только внутри просмотра
+function trapLightboxFocus(event) {
+  const items = lightboxFocusables();
+  if (!items.length) return;
+  event.preventDefault();
+  const index = items.indexOf(document.activeElement);
+  const next = event.shiftKey
+    ? (index <= 0 ? items.length - 1 : index - 1)
+    : (index === -1 || index === items.length - 1 ? 0 : index + 1);
+  items[next].focus();
+}
+
+function setLightboxDrag(offset) {
+  const lightbox = document.getElementById("lightbox");
+  lightbox.classList.add("dragging");
+  document.getElementById("lightboxImage").style.transform = `translateY(${offset}px)`;
+  lightbox.style.opacity = String(1 - Math.min(offset / 400, 0.6));
+}
+
+function resetLightboxDrag() {
+  const lightbox = document.getElementById("lightbox");
+  lightbox.classList.remove("dragging");
+  document.getElementById("lightboxImage").style.transform = "";
+  lightbox.style.opacity = "";
 }
 
 function isLightboxOpen() {
@@ -3050,17 +3090,42 @@ document.getElementById("lightbox").addEventListener("click", event => {
   if (event.target.id === "lightbox") closeLightbox();
 });
 
-let swipeStartX = null;
+// Свайп влево/вправо — соседнее фото, свайп вниз — закрыть
+const LIGHTBOX_CLOSE_SWIPE = 90;
+let swipeStart = null;
+let swipeAxis = null;
 document.getElementById("lightbox").addEventListener("touchstart", event => {
-  swipeStartX = event.touches.length === 1 ? event.touches[0].clientX : null;
+  swipeStart = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+  swipeAxis = null;
+  if (!swipeStart) resetLightboxDrag();
+}, { passive: true });
+document.getElementById("lightbox").addEventListener("touchmove", event => {
+  if (!swipeStart || event.touches.length !== 1) return;
+  const dx = event.touches[0].clientX - swipeStart.x;
+  const dy = event.touches[0].clientY - swipeStart.y;
+  if (!swipeAxis && Math.max(Math.abs(dx), Math.abs(dy)) > 10) swipeAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
+  if (swipeAxis === "y") setLightboxDrag(Math.max(0, dy));
 }, { passive: true });
 document.getElementById("lightbox").addEventListener("touchend", event => {
-  if (swipeStartX === null) return;
-  const dx = event.changedTouches[0].clientX - swipeStartX;
-  swipeStartX = null;
-  if (Math.abs(dx) > 50 && !document.getElementById("lightbox").classList.contains("single")) {
+  if (!swipeStart) return;
+  const dx = event.changedTouches[0].clientX - swipeStart.x;
+  const dy = event.changedTouches[0].clientY - swipeStart.y;
+  const axis = swipeAxis;
+  swipeStart = null;
+  swipeAxis = null;
+  if (axis === "y" && dy > LIGHTBOX_CLOSE_SWIPE) {
+    closeLightbox();
+    return;
+  }
+  resetLightboxDrag();
+  if (axis === "x" && Math.abs(dx) > 50 && !document.getElementById("lightbox").classList.contains("single")) {
     showLightboxImage(lightboxIndex + (dx < 0 ? 1 : -1));
   }
+});
+document.getElementById("lightbox").addEventListener("touchcancel", () => {
+  swipeStart = null;
+  swipeAxis = null;
+  resetLightboxDrag();
 });
 
 document.getElementById("tagFilter").addEventListener("click", event => {
@@ -3201,9 +3266,17 @@ document.addEventListener("keydown", event => {
     if (event.key === "Escape") closeLightbox();
     if (event.key === "ArrowLeft") showLightboxImage(lightboxIndex - 1);
     if (event.key === "ArrowRight") showLightboxImage(lightboxIndex + 1);
+    if (event.key === "Tab") trapLightboxFocus(event);
     return;
   }
   if (event.key === "Escape" && !detailView.classList.contains("hidden")) goBack("#/");
+});
+
+// Если фокус всё же ушёл из открытого просмотра (например, программно) — вернуть его внутрь
+document.addEventListener("focusin", event => {
+  if (isLightboxOpen() && !document.getElementById("lightbox").contains(event.target)) {
+    document.getElementById("lightboxClose").focus();
+  }
 });
 
 document.addEventListener("error", event => {
