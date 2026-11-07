@@ -41,6 +41,12 @@ let loadState = "loading";     // "loading" | "ready" | "error"
 let lastLoadedAt = 0;
 let lastLoadError = null;
 let likesEnabled = true;       // false, если в базе ещё нет таблицы review_likes
+let duelEnabled = false;       // true, когда в базе есть дуэль (таблица duel_votes и функция duel_standings)
+let duelStandings = new Map(); // id прически → { wins, losses }
+let myDuelPairs = new Set();   // пары, в которых я уже голосовал: "меньший id-больший id"
+let duelPair = null;           // [id, id] — текущая пара на экране дуэли
+let duelLast = null;           // { winnerId, loserId } — последний голос, для подписи
+let duelBusy = false;
 let seenBefore = null;         // граница «нового»: что было видно на прошлом визите (null — первый визит)
 
 let selectedPhotoId = null;
@@ -79,7 +85,8 @@ const usersView = document.getElementById("usersView");
 const userView = document.getElementById("userView");
 const compareView = document.getElementById("compareView");
 const statsView = document.getElementById("statsView");
-const allViews = [catalogView, detailView, createView, reviewView, authView, topView, feedView, usersView, userView, compareView, statsView];
+const duelView = document.getElementById("duelView");
+const allViews = [catalogView, detailView, createView, reviewView, authView, topView, feedView, usersView, userView, compareView, statsView, duelView];
 const hairGrid = document.getElementById("hairGrid");
 
 const fields = {
@@ -321,6 +328,21 @@ async function apiUnlike(reviewId) {
   await rest(`review_likes?review_id=eq.${encodeURIComponent(reviewId)}&user_id=eq.${encodeURIComponent(me.id)}`, { method: "DELETE" });
 }
 
+// Дуэль. В базе со старой схемой функции нет — тогда раздел просто не показывается (null).
+async function apiLoadDuel() {
+  try {
+    const standings = await rest("rpc/duel_standings", { method: "POST", body: {} });
+    const mine = session ? await rest("duel_votes?select=winner,loser") : [];
+    return { standings, mine };
+  } catch {
+    return null;
+  }
+}
+
+async function apiDuelVote(winner, loser) {
+  await rest("duel_votes", { method: "POST", body: { winner, loser } });
+}
+
 async function apiDelete(table, id) {
   const rows = await rest(`${table}?id=eq.${encodeURIComponent(id)}&select=id`, {
     method: "DELETE",
@@ -424,7 +446,9 @@ function mapHairstyle(row) {
 }
 
 async function refreshData() {
+  const duel = apiLoadDuel();
   const { rows, people, missing } = await apiLoadAll();
+  applyDuel(await duel);
   likesEnabled = !missing.includes("review_likes(user_id)");
   photos = rows.map(mapHairstyle);
   profiles = people;
@@ -433,6 +457,17 @@ async function refreshData() {
   lastLoadedAt = Date.now();
   rememberSeen();
   updateAuthUI();
+}
+
+function applyDuel(data) {
+  duelEnabled = Boolean(data);
+  duelStandings = new Map();
+  myDuelPairs = new Set();
+  (data?.standings || []).forEach(row => {
+    duelStandings.set(Number(row.hairstyle_id), { wins: Number(row.wins) || 0, losses: Number(row.losses) || 0 });
+  });
+  (data?.mine || []).forEach(vote => myDuelPairs.add(duelPairKey(vote.winner, vote.loser)));
+  document.getElementById("duelNavLink").classList.toggle("hidden", !duelEnabled);
 }
 
 /* ---------- «Новое с прошлого визита» ----------
@@ -994,6 +1029,11 @@ function handleRoute() {
     case "stats":
       renderStats();
       showView(statsView, { nav: "stats" });
+      return;
+
+    case "duel":
+      renderDuel();
+      showView(duelView, { nav: "duel" });
       return;
 
     case "compare":
@@ -2223,6 +2263,160 @@ function renderCompare(a, b) {
   setImageBackgrounds(box);
 }
 
+/* ---------- Дуэль ---------- */
+
+const DUEL_RATING_LIMIT = 20;
+
+function duelPairKey(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  return x < y ? `${x}-${y}` : `${y}-${x}`;
+}
+
+function duelRecord(id) {
+  return duelStandings.get(id) || { wins: 0, losses: 0 };
+}
+
+// Пара ещё свободна: я в ней не голосовал. Для гостя подходят все пары.
+function duelPairOpen(a, b) {
+  return a !== b && !(me && myDuelPairs.has(duelPairKey(a, b)));
+}
+
+function pickDuelPair() {
+  const ids = photos.map(photo => photo.id);
+  const previous = duelPair ? duelPairKey(...duelPair) : "";
+  const random = () => ids[Math.floor(Math.random() * ids.length)];
+  if (ids.length < 2) return null;
+
+  // Пока свободных пар много, хватает случайного выбора; иначе перебираем все
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const a = random();
+    const b = random();
+    if (duelPairOpen(a, b) && duelPairKey(a, b) !== previous) return [a, b];
+  }
+  const open = [];
+  ids.forEach((a, index) => ids.slice(index + 1).forEach(b => { if (duelPairOpen(a, b)) open.push([a, b]); }));
+  if (!open.length) return null;
+  const others = open.filter(pair => duelPairKey(...pair) !== previous);
+  const pool = others.length ? others : open;
+  const pair = pool[Math.floor(Math.random() * pool.length)];
+  return Math.random() < 0.5 ? pair : [pair[1], pair[0]];
+}
+
+function duelRating() {
+  return photos
+    .map(photo => {
+      const { wins, losses } = duelRecord(photo.id);
+      const duels = wins + losses;
+      // Порядок — по доле побед с поправкой на число дуэлей: одна случайная победа не выводит в лидеры
+      return { photo, wins, duels, share: duels ? wins / duels : 0, rank: (wins + 1) / (duels + 2) };
+    })
+    .filter(row => row.duels > 0)
+    .sort((a, b) => b.rank - a.rank || b.wins - a.wins || b.photo.created - a.photo.created);
+}
+
+function duelCardHtml(photo) {
+  return `
+    <button type="button" class="compare-card duel-card" data-duel-pick="${photo.id}" aria-label="Эта лучше: ${escapeHtml(photo.title)}">
+      <span class="compare-photo" data-bg-id="${photo.id}"><img src="${escapeHtml(photo.image)}" alt=""></span>
+      <strong>${escapeHtml(photo.title)}</strong>
+      <small>${tagsText(photo) || "Без тегов"}</small>
+      <span class="duel-choose">Эта лучше</span>
+    </button>
+  `;
+}
+
+function renderDuel() {
+  const arena = document.getElementById("duelArena");
+  const ratingBox = document.getElementById("duelRating");
+  const ratingHead = document.getElementById("duelRatingHead");
+  const rating = duelRating();
+  const votes = rating.reduce((sum, row) => sum + row.wins, 0);
+
+  document.getElementById("duelCount").textContent = votes ? formatCount(votes, "голос", "голоса", "голосов") : "";
+
+  if (!duelEnabled) {
+    arena.innerHTML = emptyState("⚔", "Дуэль пока недоступна", "Раздел заработает после обновления базы сайта.");
+    ratingBox.innerHTML = "";
+    ratingHead.classList.add("hidden");
+    return;
+  }
+  ratingHead.classList.remove("hidden");
+
+  let last = "";
+  if (duelLast && getPhoto(duelLast.winnerId)) {
+    const { wins, losses } = duelRecord(duelLast.winnerId);
+    last = `<p class="compare-summary" id="duelLast">Ваш выбор — «${escapeHtml(getPhoto(duelLast.winnerId).title)}»: ` +
+      `${formatCount(wins, "победа", "победы", "побед")} из ${wins + losses}.</p>`;
+  }
+
+  if (photos.length < 2) {
+    duelPair = null;
+    arena.innerHTML = emptyState("⚔", "Для дуэли нужно две прически", "Когда в каталоге будет хотя бы две прически, их можно будет сравнивать.");
+  } else {
+    const valid = duelPair && getPhoto(duelPair[0]) && getPhoto(duelPair[1]) && duelPairOpen(duelPair[0], duelPair[1]);
+    if (!valid) duelPair = pickDuelPair();
+
+    if (!duelPair) {
+      arena.innerHTML = last + emptyState("✓", "Вы сравнили все пары", "Новые пары появятся, когда в каталог добавят прически.");
+    } else {
+      const [a, b] = duelPair.map(getPhoto);
+      arena.innerHTML = `
+        <p class="duel-question">Какая прическа лучше? Нажмите на неё.${me ? "" : " Голосовать можно после входа."}</p>
+        <div class="compare-cards duel-cards">${duelCardHtml(a)}${duelCardHtml(b)}</div>
+        <div class="more-row duel-actions">
+          <button type="button" class="secondary-button more-button" id="duelSkip">Другая пара</button>
+        </div>
+        ${last}
+      `;
+      setImageBackgrounds(arena);
+    }
+  }
+
+  ratingBox.innerHTML = rating.length
+    ? rating.slice(0, DUEL_RATING_LIMIT).map((row, index) => `
+      <a class="top-row${index < 3 ? " podium" : ""}" href="${hairHref(row.photo.id)}">
+        <span class="top-pos">${String(index + 1).padStart(2, "0")}</span>
+        <span class="top-thumb"><img src="${escapeHtml(row.photo.image)}" alt="" loading="lazy"></span>
+        <span class="top-info">
+          <strong>${escapeHtml(row.photo.title)}</strong>
+          <small>${formatCount(row.wins, "победа", "победы", "побед")} из ${formatCount(row.duels, "дуэли", "дуэлей", "дуэлей")}</small>
+        </span>
+        <span class="duel-share">${Math.round(row.share * 100)}%</span>
+      </a>
+    `).join("")
+    : `<p class="stats-note">Рейтинг появится после первых голосов.</p>`;
+}
+
+async function voteDuel(winnerId) {
+  if (!duelPair || duelBusy) return;
+  if (!requireAuth("#/duel", "Войдите, чтобы голосовать в дуэли.")) return;
+  const loserId = duelPair.find(id => id !== winnerId);
+  if (!getPhoto(winnerId) || !getPhoto(loserId)) return;
+
+  duelBusy = true;
+  document.querySelectorAll("#duelArena button").forEach(button => { button.disabled = true; });
+  try {
+    await apiDuelVote(winnerId, loserId);
+    const winner = duelRecord(winnerId);
+    const loser = duelRecord(loserId);
+    duelStandings.set(winnerId, { ...winner, wins: winner.wins + 1 });
+    duelStandings.set(loserId, { ...loser, losses: loser.losses + 1 });
+    myDuelPairs.add(duelPairKey(winnerId, loserId));
+    duelLast = { winnerId, loserId };
+  } catch (error) {
+    if (error.code === "23505") {
+      // За эту пару уже голосовали (например, с другого устройства) — просто следующая
+      myDuelPairs.add(duelPairKey(winnerId, loserId));
+    } else {
+      showToast(humanError(error));
+    }
+  } finally {
+    duelBusy = false;
+  }
+  if (!duelView.classList.contains("hidden")) renderDuel();
+}
+
 /* ---------- Вход и регистрация ---------- */
 
 function openAuth(mode) {
@@ -2300,6 +2494,9 @@ async function submitAuth() {
 
 async function logout() {
   await apiSignOut();
+  myDuelPairs = new Set();
+  duelPair = null;
+  duelLast = null;
   updateAuthUI();
   showToast("Вы вышли из аккаунта.");
   navigate("#/", { replace: true });
@@ -2925,6 +3122,19 @@ document.addEventListener("click", event => {
   if (!likeButton || likeButton.disabled) return;
   event.preventDefault();
   toggleLike(Number(likeButton.dataset.likeReviewId));
+});
+
+document.getElementById("duelArena").addEventListener("click", event => {
+  const card = event.target.closest("[data-duel-pick]");
+  if (card && !card.disabled) {
+    voteDuel(Number(card.dataset.duelPick));
+    return;
+  }
+  if (event.target.closest("#duelSkip") && !duelBusy) {
+    duelPair = pickDuelPair();
+    duelLast = null;
+    renderDuel();
+  }
 });
 
 document.getElementById("toastAction").addEventListener("click", () => {

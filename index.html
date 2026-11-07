@@ -63,6 +63,7 @@
         <a href="#/reviews" data-nav="reviews">Рецензии</a>
         <a href="#/users" data-nav="users">Участники</a>
         <a href="#/compare" data-nav="compare">Сравнить</a>
+        <a href="#/duel" data-nav="duel" id="duelNavLink" class="hidden">Дуэль</a>
         <a href="#/stats" data-nav="stats">Статистика</a>
       </nav>
 
@@ -361,6 +362,26 @@
           <span id="userReviewCount"></span>
         </div>
         <div class="feed-list" id="userReviews"></div>
+      </section>
+
+      <!-- ===== Дуэль ===== -->
+      <section class="duel-view hidden" id="duelView">
+        <div class="catalog-head">
+          <div>
+            <span class="eyebrow">ДУЭЛЬ</span>
+            <h2>Какая лучше?</h2>
+          </div>
+          <span class="catalog-count" id="duelCount"></span>
+        </div>
+        <div id="duelArena"></div>
+        <div class="section-heading" id="duelRatingHead">
+          <div>
+            <span class="eyebrow">РЕЙТИНГ</span>
+            <h3>Победы в дуэлях</h3>
+          </div>
+          <span>доля побед</span>
+        </div>
+        <div class="top-list" id="duelRating"></div>
       </section>
 
       <!-- ===== Сравнение ===== -->
