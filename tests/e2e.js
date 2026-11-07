@@ -376,17 +376,21 @@ function check(name, condition, detail = "") {
     check("при следующем визите метки исчезают", marks.cards === 0 && marks.marks === 0, JSON.stringify(marks));
 
     const mashaReviewCreated = Number(sql(`select floor(extract(epoch from r.created_at) * 1000)::bigint from reviews r join profiles p on p.id = r.author where p.username = 'masha_k' and r.hairstyle_id = ${hairId}`));
+    // Метку пишем прямо перед одной перезагрузкой: лишняя полная загрузка между ними сама запомнила бы
+    // новую границу «нового», и результат зависел бы от того, успела ли она получить данные.
+    await visitor.goto(SITE + "#/"); await settle(visitor);
     await backdateSeen(visitor, mashaReviewCreated - 1);
-    await visitor.goto(SITE); await visitor.reload(); await visitor.waitForTimeout(900);
+    await visitor.reload(); await visitor.waitForTimeout(900);
     marks = await markCounts(visitor);
     check("на карточке с новой оценкой — «+1 новая»", marks.cards === 0 && (await text(visitor, ".hair-card .card-fresh")) === "+1 новая", await text(visitor, ".hair-card .card-meta"));
 
+    await masha.goto(SITE + `#/hair/${hairId}`); await settle(masha);
     await backdateSeen(masha, hairCreated - 1000);
-    await masha.goto(SITE + `#/hair/${hairId}`); await masha.reload(); await masha.waitForTimeout(900);
+    await masha.reload(); await masha.waitForTimeout(900);
     check("свою оценку участник не видит как новую", (await masha.$$eval(".review-card.mine .new-mark", items => items.length)) === 0 && (await masha.$$eval(".review-card:not(.mine) .new-mark", items => items.length)) === 1);
-    await guest.reload(); await guest.waitForTimeout(900);
-    await backdateSeen(guest, hairCreated - 1000);
     await guest.goto(SITE); await guest.reload(); await guest.waitForTimeout(900);
+    await backdateSeen(guest, hairCreated - 1000);
+    await guest.reload(); await guest.waitForTimeout(900);
     check("свою прическу автор не видит как новую", (await guest.$$eval(".card-new", items => items.length)) === 0 && (await text(guest, ".hair-card .card-fresh")) === "+1 новая");
 
     for (const colorScheme of ["light", "dark"]) {
@@ -417,6 +421,9 @@ function check(name, condition, detail = "") {
     await masha.setInputFiles("#importInput", backupFile); await waitImport();
     check("перенос из старой копии: прическа и архивные оценки", sql("select count(*) from hairstyles where title = 'Старый образ'") === "1" && sql("select count(*) from reviews where author is null") === "2", await text(masha, "#toastText"));
     check("даты из старой версии сохранились", sql("select created_at < now() - interval '10 days' from hairstyles where title = 'Старый образ'") === "t");
+    // Второй перенос — только после того, как сайт загрузил итог первого (иначе тест зависит от скорости)
+    await masha.waitForFunction(() => location.hash === "#/" &&
+      [...document.querySelectorAll("#hairGrid .hair-card h3")].some(title => title.textContent === "Старый образ"), null, { timeout: 15000 });
     await masha.evaluate(() => { document.getElementById("toastText").textContent = ""; });
     await masha.setInputFiles("#importInput", backupFile); await waitImport();
     check("повторный перенос ничего не задваивает", sql("select count(*) from hairstyles where title = 'Старый образ'") === "1" && sql("select count(*) from reviews where author is null") === "2");
@@ -619,12 +626,121 @@ function check(name, condition, detail = "") {
     }
     await guest.screenshot({ path: path.join(SHOTS, "desktop-stats.png"), fullPage: true });
 
+    // ---------- Дуэль ----------
+    console.log("Дуэль");
+    const duelPairShown = page => page.$$eval("#duelArena [data-duel-pick]", items => items.map(item => Number(item.dataset.duelPick)));
+    const pairKey = ([a, b]) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+    const duelGuest = await newPage();
+    await duelGuest.goto(SITE); await duelGuest.waitForTimeout(900);
+    check("пункт «Дуэль» есть в меню", await duelGuest.isVisible('#mainNav a[data-nav="duel"]'));
+    await duelGuest.click('#mainNav a[data-nav="duel"]'); await settle(duelGuest);
+    const guestPair = await duelPairShown(duelGuest);
+    check("гостю показывают две разные прически", guestPair.length === 2 && guestPair[0] !== guestPair[1] &&
+      (await text(duelGuest, "#mainNav a.active")) === "Дуэль", JSON.stringify(guestPair));
+    check("рейтинг дуэлей пуст до первых голосов", (await text(duelGuest, "#duelRating")).includes("Рейтинг появится"));
+    await duelGuest.click("#duelArena [data-duel-pick]"); await settle(duelGuest);
+    check("голос без входа ведёт на вход", (await duelGuest.evaluate(() => location.hash)) === "#/login" && sql("select count(*) from duel_votes") === "0");
+    await duelGuest.close();
+
+    await guest.goto(SITE + "#/duel"); await guest.reload(); await guest.waitForTimeout(900);
+    let pair = await duelPairShown(guest);
+    await guest.click("#duelSkip"); await settle(guest);
+    let nextPair = await duelPairShown(guest);
+    check("«Другая пара» меняет пару без голоса", nextPair.length === 2 && pairKey(nextPair) !== pairKey(pair) && sql("select count(*) from duel_votes") === "0");
+    pair = nextPair;
+    const winnerTitle = sql(`select title from hairstyles where id = ${pair[0]}`);
+    await guest.click(`#duelArena [data-duel-pick="${pair[0]}"]`); await guest.waitForTimeout(700);
+    check("голос сохранён в базе от своего имени", sql(`select count(*) from duel_votes where voter = '${stepanId}' and winner = ${pair[0]} and loser = ${pair[1]}`) === "1");
+    nextPair = await duelPairShown(guest);
+    check("после голоса — новая пара", nextPair.length === 2 && pairKey(nextPair) !== pairKey(pair), JSON.stringify([pair, nextPair]));
+    check("подпись о выборе", (await text(guest, "#duelLast")).includes(`«${winnerTitle}»: 1 победа из 1`), await text(guest, "#duelLast"));
+    check("рейтинг: победитель с долей 100%", (await text(guest, "#duelRating .top-row strong")) === winnerTitle &&
+      (await text(guest, "#duelRating .top-row .duel-share")) === "100%" && (await text(guest, "#duelRating .top-row small")) === "1 победа из 1 дуэли",
+      await text(guest, "#duelRating .top-row"));
+    check("в рейтинге и побеждённая прическа", (await guest.$$eval("#duelRating .top-row", rows => rows.length)) === 2 &&
+      (await text(guest, "#duelRating .top-row:last-child .duel-share")) === "0%");
+    await guest.reload(); await guest.waitForTimeout(900);
+    check("после перезагрузки сыгранная пара не повторяется", pairKey(await duelPairShown(guest)) !== pairKey(pair));
+
+    const duelAttacks = await masha.evaluate(async ({ pair, stepanId, gw }) => {
+      const session = JSON.parse(localStorage.getItem("hairrate_session"));
+      const headers = { apikey: "sb_publishable__TEST", Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" };
+      const post = body => fetch(`${gw}/rest/v1/duel_votes`, { method: "POST", headers, body: JSON.stringify(body) });
+      const asOther = await post({ winner: pair[0], loser: pair[1], voter: stepanId });
+      const fakeTime = await post({ winner: pair[0], loser: pair[1], created_at: "2020-01-01T00:00:00Z" });
+      const same = await post({ winner: pair[0], loser: pair[0] });
+      const first = await post({ winner: pair[1], loser: pair[0] });
+      const reversed = await post({ winner: pair[0], loser: pair[1] });
+      const own = await (await fetch(`${gw}/rest/v1/duel_votes?select=voter,winner,loser`, { headers })).json();
+      const change = await fetch(`${gw}/rest/v1/duel_votes?voter=eq.${session.user.id}`, { method: "PATCH", headers, body: JSON.stringify({ winner: pair[0], loser: pair[1] }) });
+      const remove = await fetch(`${gw}/rest/v1/duel_votes?voter=eq.${session.user.id}`, { method: "DELETE", headers });
+      const guestHeaders = { apikey: "sb_publishable__TEST", "Content-Type": "application/json" };
+      const guestRead = await fetch(`${gw}/rest/v1/duel_votes?select=voter`, { headers: guestHeaders });
+      const guestVote = await fetch(`${gw}/rest/v1/duel_votes`, { method: "POST", headers: guestHeaders, body: JSON.stringify({ winner: pair[0], loser: pair[1] }) });
+      const standings = await (await fetch(`${gw}/rest/v1/rpc/duel_standings`, { method: "POST", headers: guestHeaders, body: "{}" })).json();
+      return { asOther: asOther.status, fakeTime: fakeTime.status, same: same.status, first: first.status, reversed: reversed.status,
+        ownOnly: own.length === 1 && own.every(vote => vote.voter === session.user.id), change: change.status, remove: remove.status,
+        guestRead: guestRead.status, guestVote: guestVote.status, standings };
+    }, { pair, stepanId, gw: GW });
+    check("голос от чужого имени через API отклоняется", duelAttacks.asOther >= 400, String(duelAttacks.asOther));
+    check("подделать время голоса нельзя", duelAttacks.fakeTime >= 400, String(duelAttacks.fakeTime));
+    check("прическа не может победить сама себя", duelAttacks.same >= 400, String(duelAttacks.same));
+    check("свой голос через API проходит", duelAttacks.first === 201, String(duelAttacks.first));
+    check("второй голос на ту же пару (в обратном порядке) отклоняется", duelAttacks.reversed === 409, String(duelAttacks.reversed));
+    check("участник видит только свои голоса", duelAttacks.ownOnly);
+    check("изменить или удалить голос нельзя", duelAttacks.change >= 400 && duelAttacks.remove >= 400 &&
+      sql(`select count(*) from duel_votes where voter = '${mashaId}'`) === "1", `${duelAttacks.change} / ${duelAttacks.remove}`);
+    check("гость не видит, кто как голосовал, и не голосует", duelAttacks.guestRead >= 400 && duelAttacks.guestVote >= 400, `${duelAttacks.guestRead} / ${duelAttacks.guestVote}`);
+    const standing = id => duelAttacks.standings.find(row => row.hairstyle_id === id) || {};
+    check("итоги дуэлей доступны гостю", standing(pair[0]).wins === 1 && standing(pair[0]).losses === 1 && standing(pair[1]).wins === 1 && standing(pair[1]).losses === 1,
+      JSON.stringify(duelAttacks.standings));
+
+    // Порядок рейтинга: доля побед с поправкой (победы + 1) / (дуэли + 2)
+    sql(`insert into duel_votes (voter, winner, loser) select '${stepanId}', a.id, b.id from hairstyles a, hairstyles b ` +
+        "where a.id < b.id and a.title like 'Пачка %' and b.title like 'Пачка %' on conflict do nothing");
+    const expectedLeader = sql("select h.title from hairstyles h join public.duel_standings() s on s.hairstyle_id = h.id " +
+      "order by (s.wins + 1)::float / (s.wins + s.losses + 2) desc, s.wins desc, h.created_at desc limit 1");
+    await guest.reload(); await guest.waitForTimeout(900);
+    check("рейтинг дуэлей: лидер с поправкой на число дуэлей", (await text(guest, "#duelRating .top-row strong")) === expectedLeader,
+      `${await text(guest, "#duelRating .top-row strong")} / ${expectedLeader}`);
+    check("рейтинг показывает не больше 20 причесок", (await guest.$$eval("#duelRating .top-row", rows => rows.length)) === 20);
+    sql(`insert into duel_votes (voter, winner, loser) select '${stepanId}', a.id, b.id from hairstyles a, hairstyles b where a.id < b.id on conflict do nothing`);
+    await guest.reload(); await guest.waitForTimeout(900);
+    check("когда все пары сыграны — сообщение вместо пары", (await duelPairShown(guest)).length === 0 &&
+      (await text(guest, "#duelArena .empty-catalog strong")) === "Вы сравнили все пары");
+    check("другой участник по-прежнему получает пары", await (async () => {
+      await masha.goto(SITE + "#/duel"); await masha.reload(); await masha.waitForTimeout(900);
+      const shown = await duelPairShown(masha);
+      return shown.length === 2 && pairKey(shown) !== pairKey(pair);
+    })());
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE + "#/duel"); await phone.waitForTimeout(900);
+      const layout = await phone.evaluate(() => {
+        const nav = document.getElementById("mainNav").getBoundingClientRect();
+        const link = document.querySelector('#mainNav a[data-nav="duel"]').getBoundingClientRect();
+        const cards = [...document.querySelectorAll("#duelArena .duel-card, #duelSkip, #duelRating .top-row")].map(item => item.getBoundingClientRect());
+        return {
+          overflow: document.documentElement.scrollWidth > window.innerWidth,
+          navVisible: link.left >= nav.left - 1 && link.right <= nav.right + 1,
+          inside: cards.length >= 4 && cards.every(rect => rect.left >= 0 && rect.right <= window.innerWidth)
+        };
+      });
+      check(`${colorScheme}: дуэль на телефоне без горизонтальной прокрутки`, !layout.overflow && layout.inside, JSON.stringify(layout));
+      check(`${colorScheme}: пункт «Дуэль» в меню виден на телефоне целиком`, layout.navVisible);
+      await phone.screenshot({ path: path.join(SHOTS, `phone-duel-${colorScheme}.png`), fullPage: true });
+    }
+    await guest.setViewportSize({ width: 1280, height: 900 });
+    sql(`delete from duel_votes where voter = '${stepanId}'`);
+    await guest.reload(); await guest.waitForTimeout(900);
+    await guest.screenshot({ path: path.join(SHOTS, "desktop-duel.png"), fullPage: true });
+
     // ---------- Вёрстка на телефоне ----------
     console.log("Телефон, обе темы");
     for (const colorScheme of ["light", "dark"]) {
       const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
       await phone.goto(SITE); await settle(phone);
-      for (const route of ["#/", "#/top", "#/reviews", "#/users", "#/compare", "#/stats", "#/login"]) {
+      for (const route of ["#/", "#/top", "#/reviews", "#/users", "#/compare", "#/stats", "#/duel", "#/login"]) {
         await phone.goto(SITE + route); await phone.waitForTimeout(350);
         const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
         check(`${colorScheme}: ${route} без горизонтальной прокрутки`, !overflow);
@@ -652,6 +768,12 @@ function check(name, condition, detail = "") {
     check("без таблицы лайков лента без кнопок лайка", (await legacy.$$eval("#feedList .review-card", cards => cards.length)) >= 1 && (await legacy.$$eval(".review-like", items => items.length)) === 0);
     await legacy.goto(SITE + "#/stats"); await settle(legacy);
     check("старая схема: статистика открывается", (await legacy.$$eval("#verdictStats .verdict-stat", items => items.length)) === 6);
+    sql("drop function duel_standings(); drop table duel_votes; notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);
+    await legacy.goto(SITE); await legacy.reload(); await legacy.waitForTimeout(900);
+    check("без дуэли в базе каталог загружается, пункта «Дуэль» в меню нет",
+      (await legacy.$$eval(".hair-card", cards => cards.length)) >= 1 && !(await legacy.isVisible('#mainNav a[data-nav="duel"]')));
+    await legacy.goto(SITE + "#/duel"); await settle(legacy);
+    check("без дуэли в базе прямой адрес показывает понятное сообщение", (await text(legacy, "#duelArena .empty-catalog strong")) === "Дуэль пока недоступна");
 
     check("нет ошибок JavaScript на страницах", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {

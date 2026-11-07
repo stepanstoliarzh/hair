@@ -136,6 +136,40 @@ create table if not exists public.review_likes (
 );
 create index if not exists review_likes_user_idx on public.review_likes (user_id);
 
+-- ---------- Дуэль ----------
+-- Участнику показывают две прически, он выбирает лучшую. Один голос на пару от человека
+-- (в любом порядке), голос нельзя изменить или удалить. Кто как голосовал, видит только он сам:
+-- всем остальным доступны лишь итоги — функция duel_standings() (победы и поражения прически).
+-- voter ссылается на auth.users, а не на profiles — по той же причине, что и в review_likes.
+create table if not exists public.duel_votes (
+  id bigint generated always as identity primary key,
+  voter uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  winner bigint not null references public.hairstyles (id) on delete cascade,
+  loser bigint not null references public.hairstyles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  constraint duel_votes_distinct check (winner <> loser)
+);
+create unique index if not exists duel_votes_pair_key
+  on public.duel_votes (voter, least(winner, loser), greatest(winner, loser));
+create index if not exists duel_votes_winner_idx on public.duel_votes (winner);
+create index if not exists duel_votes_loser_idx on public.duel_votes (loser);
+
+create or replace function public.duel_standings()
+returns table (hairstyle_id bigint, wins integer, losses integer)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select t.hairstyle_id, count(*) filter (where t.won)::int, count(*) filter (where not t.won)::int
+  from (
+    select v.winner as hairstyle_id, true as won from public.duel_votes v
+    union all
+    select v.loser, false from public.duel_votes v
+  ) t
+  group by t.hairstyle_id
+$$;
+
 -- ---------- Права ролей Data API ----------
 -- В новых проектах Supabase таблицы не открываются для сайта автоматически,
 -- поэтому права выдаются явно. Что именно разрешено, дальше уточняют правила RLS.
@@ -145,15 +179,21 @@ grant insert, delete on public.hairstyles, public.reviews to authenticated;
 grant select on public.review_likes to anon, authenticated;
 grant insert, delete on public.review_likes to authenticated;
 revoke update on public.review_likes from anon, authenticated;
+-- Дуэль: гость голоса не видит (итоги — через duel_standings), участник пишет только winner и loser
+revoke select, insert, update, delete, truncate on public.duel_votes from anon, authenticated;
+grant select on public.duel_votes to authenticated;
+grant insert (winner, loser) on public.duel_votes to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on function public.hairrate_score(int, int, int, int) to anon, authenticated;
 grant execute on function public.is_admin() to anon, authenticated;
+grant execute on function public.duel_standings() to anon, authenticated;
 
 -- ---------- Права доступа (Row Level Security) ----------
 alter table public.profiles enable row level security;
 alter table public.hairstyles enable row level security;
 alter table public.reviews enable row level security;
 alter table public.review_likes enable row level security;
+alter table public.duel_votes enable row level security;
 
 -- Смотреть каталог могут все, даже без входа
 drop policy if exists "profiles: read" on public.profiles;
@@ -233,6 +273,17 @@ drop policy if exists "review_likes: delete own" on public.review_likes;
 create policy "review_likes: delete own" on public.review_likes
   for delete to authenticated
   using (user_id = (select auth.uid()));
+
+-- Дуэль: свои голоса видит только сам участник; голосовать — только от своего имени
+drop policy if exists "duel_votes: read own" on public.duel_votes;
+create policy "duel_votes: read own" on public.duel_votes
+  for select to authenticated
+  using (voter = (select auth.uid()));
+
+drop policy if exists "duel_votes: insert own" on public.duel_votes;
+create policy "duel_votes: insert own" on public.duel_votes
+  for insert to authenticated
+  with check (voter = (select auth.uid()));
 
 -- Владельца и автора нельзя подменить при изменении записи
 revoke update on public.hairstyles from anon, authenticated;
