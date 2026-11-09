@@ -378,7 +378,7 @@ h3 { margin-top: 4px; font-size: 19px; }
 }
 
 .catalog-view, .detail-view, .create-view, .review-view,
-.top-view, .feed-view, .users-view, .user-view, .compare-view, .stats-view { margin-bottom: 40px; }
+.top-view, .feed-view, .users-view, .user-view, .compare-view, .stats-view, .duel-view { margin-bottom: 40px; }
 
 /* ---------- Каталог ---------- */
 
@@ -2212,6 +2212,66 @@ input[type="range"]:focus-visible,
   *, *::before, *::after { transition: none !important; }
 }
 
+/* ---------- Дуэль ---------- */
+
+.duel-question {
+  margin: 0 2px 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.duel-card {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.duel-card:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px var(--focus-ring); }
+.duel-card:disabled { cursor: progress; opacity: .7; }
+
+.duel-card > small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duel-choose {
+  align-self: stretch;
+  margin: 8px 0 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-3);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+
+.duel-card:hover .duel-choose,
+.duel-card:focus-visible .duel-choose {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+.duel-cards { margin-bottom: 0; }
+.duel-actions { margin-top: 16px; }
+#duelRatingHead { margin-top: 34px; }
+
+.duel-share {
+  min-width: 52px;
+  color: var(--ink);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: -.04em;
+  text-align: right;
+}
+
 /* ---------- Адаптивность ---------- */
 
 @media (max-width: 900px) {
@@ -2280,6 +2340,8 @@ input[type="range"]:focus-visible,
   .compare-photo { height: 190px; }
   .compare-card > strong { font-size: 15px; }
   .compare-card .score-badge { padding: 8px 10px; }
+  .duel-choose { padding: 10px 8px; font-size: 12px; }
+  .duel-share { min-width: 40px; font-size: 16px; }
   .compare-card .badge-number strong { font-size: 20px; }
   .compare-table { padding: 2px 14px; }
   .compare-row { grid-template-columns: 40px minmax(0, 1fr) 40px; gap: 10px; }
