@@ -41,6 +41,8 @@ let loadState = "loading";     // "loading" | "ready" | "error"
 let lastLoadedAt = 0;
 let lastLoadError = null;
 let likesEnabled = true;       // false, если в базе ещё нет таблицы review_likes
+let helpfulEnabled = true;     // false, если в базе ещё нет таблицы review_helpful («Полезно»)
+let reviewSort = "new";        // порядок рецензий на странице прически: "new" | "helpful"
 let duelEnabled = false;       // true, когда в базе есть дуэль (таблица duel_votes и функция duel_standings)
 let duelStandings = new Map(); // id прически → { wins, losses }
 let myDuelPairs = new Set();   // пары, в которых я уже голосовал: "меньший id-больший id"
@@ -260,11 +262,11 @@ async function apiSignOut() {
 const HAIRSTYLE_SELECT = [
   "id", "owner", "wearer", "title", "description", "tags", "images", "created_at",
   "owner_profile:profiles!hairstyles_owner_fkey(username)",
-  "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,review_likes(user_id),author_profile:profiles!reviews_author_fkey(username))"
+  "reviews(id,author,legacy_author,text,accuracy,beauty,appearance,personal,score,created_at,edited_at,review_likes(user_id),review_helpful(user_id),author_profile:profiles!reviews_author_fkey(username))"
 ].join(",");
 
-// Колонки (и связанная таблица лайков), которых может не быть в базе со старой схемой
-const OPTIONAL_COLUMNS = ["wearer", "legacy_author", "review_likes(user_id)"];
+// Колонки (и связанные таблицы лайков и «Полезно»), которых может не быть в базе со старой схемой
+const OPTIONAL_COLUMNS = ["wearer", "legacy_author", "review_likes(user_id)", "review_helpful(user_id)"];
 
 function rest(path, options = {}) {
   return rawRequest(`/rest/v1/${path}`, options);
@@ -326,6 +328,14 @@ async function apiLike(reviewId) {
 
 async function apiUnlike(reviewId) {
   await rest(`review_likes?review_id=eq.${encodeURIComponent(reviewId)}&user_id=eq.${encodeURIComponent(me.id)}`, { method: "DELETE" });
+}
+
+async function apiMarkHelpful(reviewId) {
+  await rest("review_helpful", { method: "POST", body: { review_id: reviewId } });
+}
+
+async function apiUnmarkHelpful(reviewId) {
+  await rest(`review_helpful?review_id=eq.${encodeURIComponent(reviewId)}&user_id=eq.${encodeURIComponent(me.id)}`, { method: "DELETE" });
 }
 
 // Дуэль. В базе со старой схемой функции нет — тогда раздел просто не показывается (null).
@@ -440,7 +450,8 @@ function mapHairstyle(row) {
       score: review.score,
       created: toTime(review.created_at),
       edited: review.edited_at ? toTime(review.edited_at) : null,
-      likes: (review.review_likes || []).map(like => like.user_id)
+      likes: (review.review_likes || []).map(like => like.user_id),
+      helpful: (review.review_helpful || []).map(mark => mark.user_id)
     }))
   };
 }
@@ -450,6 +461,7 @@ async function refreshData() {
   const { rows, people, missing } = await apiLoadAll();
   applyDuel(await duel);
   likesEnabled = !missing.includes("review_likes(user_id)");
+  helpfulEnabled = !missing.includes("review_helpful(user_id)");
   photos = rows.map(mapHairstyle);
   profiles = people;
   me = session ? profiles.find(profile => profile.id === session.user.id) || null : null;
@@ -868,30 +880,54 @@ function reviewCardHtml(review, photo, { withPhoto = false, actions = false } = 
         <div class="review-metrics">
           ${criteria.map(({ key, short, max }) => `<span>${short} <b>${review[key]}/${max}</b></span>`).join("")}
         </div>
-        ${likesEnabled ? reviewLikesHtml(review, photo) : ""}
+        ${likesEnabled || helpfulEnabled ? reviewLikesHtml(review, photo) : ""}
       </div>
     </article>
   `;
 }
 
-// Лайки рецензии: кнопка с числом отметок и пометка, если отметил владелец прически
+// Отметки рецензии: лайк с числом отметок (и пометка, если отметил владелец прически) и «Полезно»
 function reviewLikesHtml(review, photo) {
+  const own = Boolean(me && review.authorId === me.id);
+  return `
+    <div class="review-likes" data-reactions-review-id="${review.id}">
+      ${likesEnabled ? reviewLikeButtonHtml(review, photo, own) : ""}
+      ${helpfulEnabled ? reviewHelpfulButtonHtml(review, own) : ""}
+    </div>
+  `;
+}
+
+function reviewLikeButtonHtml(review, photo, own) {
   const likes = review.likes || [];
   const count = likes.length;
   const liked = Boolean(me && likes.includes(me.id));
-  const own = Boolean(me && review.authorId === me.id);
   const wearerLiked = Boolean(photo?.wearer && likes.includes(photo.wearer));
   const label = own ? "Отметки вашей рецензии" : liked ? "Убрать отметку «нравится»" : "Отметить «нравится»";
-
   return `
-    <div class="review-likes">
       <button type="button" class="review-like${liked ? " active" : ""}" data-like-review-id="${review.id}"
         aria-pressed="${liked}" aria-label="${label}" title="${label}"${own ? " disabled" : ""}>
         <span aria-hidden="true">${liked ? "♥" : "♡"}</span>${count ? `<b>${count}</b>` : ""}
       </button>
       ${wearerLiked ? `<span class="owner-like" title="Рецензию отметил владелец прически">♥ Нравится владельцу прически</span>` : ""}
-    </div>
   `;
+}
+
+function reviewHelpfulButtonHtml(review, own) {
+  const marks = review.helpful || [];
+  const count = marks.length;
+  const marked = Boolean(me && marks.includes(me.id));
+  const label = own ? "Отметки «полезно» у вашей рецензии"
+    : marked ? "Убрать отметку «полезно»" : "Отметить рецензию как полезную";
+  return `
+      <button type="button" class="review-like review-helpful${marked ? " active" : ""}" data-helpful-review-id="${review.id}"
+        aria-pressed="${marked}" aria-label="${label}" title="${label}"${own ? " disabled" : ""}>
+        <span aria-hidden="true">${marked ? "✓" : "+"}</span>Полезно${count ? `<b>${count}</b>` : ""}
+      </button>
+  `;
+}
+
+function helpfulCount(review) {
+  return (review.helpful || []).length;
 }
 
 function emptyState(icon, title, text, action = "") {
@@ -1452,8 +1488,17 @@ function renderCriteria(photo) {
 
 function renderReviews(photo) {
   const list = document.getElementById("reviewsList");
-  const reviews = [...(photo.reviews || [])].sort((a, b) => b.created - a.created);
+  const byHelpful = helpfulEnabled && reviewSort === "helpful";
+  const reviews = [...(photo.reviews || [])].sort((a, b) =>
+    (byHelpful ? helpfulCount(b) - helpfulCount(a) : 0) || b.created - a.created);
   const withText = reviews.filter(review => review.text).length;
+  const tabs = document.getElementById("reviewSortTabs");
+  tabs.classList.toggle("hidden", !helpfulEnabled || reviews.length < 2);
+  tabs.querySelectorAll("[data-review-sort]").forEach(button => {
+    const active = button.dataset.reviewSort === (byHelpful ? "helpful" : "new");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
 
   document.getElementById("reviewCount").textContent = reviews.length
     ? `${formatCount(reviews.length, "оценка", "оценки", "оценок")} · ${withText} с текстом`
@@ -2915,13 +2960,39 @@ async function submitReview() {
 }
 
 let likeBusy = false;
+let helpfulBusy = false;
 
-// Перерисовываем только блок лайков, чтобы страница не прыгала наверх
+// Перерисовываем только блок отметок, чтобы страница не прыгала наверх
 function updateLikeViews({ review, photo }) {
-  document.querySelectorAll(`[data-like-review-id="${review.id}"]`).forEach(button => {
-    const box = button.closest(".review-likes");
-    if (box) box.outerHTML = reviewLikesHtml(review, photo).trim();
+  document.querySelectorAll(`[data-reactions-review-id="${review.id}"]`).forEach(box => {
+    box.outerHTML = reviewLikesHtml(review, photo).trim();
   });
+}
+
+async function toggleHelpful(reviewId) {
+  if (!requireAuth(location.hash || "#/", "Войдите, чтобы отмечать рецензии.")) return;
+  const found = allReviews().find(({ review }) => review.id === reviewId);
+  if (!found || helpfulBusy || found.review.authorId === me.id) return;
+
+  const { review } = found;
+  const marked = review.helpful.includes(me.id);
+  helpfulBusy = true;
+  // Сразу показываем результат, при ошибке — возвращаем как было.
+  // Порядок «Полезные» не пересчитываем на ходу, чтобы рецензия не уезжала из-под пальца.
+  review.helpful = marked ? review.helpful.filter(id => id !== me.id) : [...review.helpful, me.id];
+  updateLikeViews(found);
+  try {
+    if (marked) await apiUnmarkHelpful(reviewId);
+    else await apiMarkHelpful(reviewId);
+  } catch (error) {
+    if (error.code !== "23505") {
+      review.helpful = marked ? [...review.helpful, me.id] : review.helpful.filter(id => id !== me.id);
+      showToast(humanError(error), { duration: 6000 });
+      updateLikeViews(found);
+    }
+  } finally {
+    helpfulBusy = false;
+  }
 }
 
 async function toggleLike(reviewId) {
@@ -3122,6 +3193,21 @@ document.addEventListener("click", event => {
   if (!likeButton || likeButton.disabled) return;
   event.preventDefault();
   toggleLike(Number(likeButton.dataset.likeReviewId));
+});
+
+document.addEventListener("click", event => {
+  const helpfulButton = event.target.closest("[data-helpful-review-id]");
+  if (!helpfulButton || helpfulButton.disabled) return;
+  event.preventDefault();
+  toggleHelpful(Number(helpfulButton.dataset.helpfulReviewId));
+});
+
+document.getElementById("reviewSortTabs").addEventListener("click", event => {
+  const button = event.target.closest("[data-review-sort]");
+  if (!button || button.dataset.reviewSort === reviewSort) return;
+  reviewSort = button.dataset.reviewSort;
+  const photo = getPhoto(selectedPhotoId);
+  if (photo) renderReviews(photo);
 });
 
 document.getElementById("duelArena").addEventListener("click", event => {

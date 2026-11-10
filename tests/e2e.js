@@ -348,6 +348,83 @@ function check(name, condition, detail = "") {
       await phone.screenshot({ path: path.join(SHOTS, `phone-likes-${colorScheme}.png`), fullPage: true });
     }
 
+    // ---------- «Полезно» на рецензиях и сортировка по полезности ----------
+    console.log("«Полезно» на рецензиях");
+    const helpfulCount = () => sql(`select count(*) from review_helpful h join reviews r on r.id = h.review_id where r.hairstyle_id = ${hairId}`);
+    const cardOrder = page => page.$$eval("#reviewsList .review-card", cards => cards.map(card => card.querySelector("[data-helpful-review-id]").dataset.helpfulReviewId).join());
+    const reviewIdsBy = order => sql(`select string_agg(id::text, ',' order by ${order}) from reviews where hairstyle_id = ${hairId}`);
+    await masha.goto(SITE + `#/hair/${hairId}`); await masha.reload(); await masha.waitForTimeout(900);
+    check("у каждой рецензии кнопка «Полезно»", (await masha.$$eval("#reviewsList .review-helpful", items => items.length)) === Number(sql(`select count(*) from reviews where hairstyle_id = ${hairId}`)));
+    check("свою рецензию отметить «полезно» нельзя (кнопка неактивна)", await masha.isDisabled(".review-card.mine .review-helpful"));
+    check("переключатель порядка виден, по умолчанию «Новые»", (await masha.isVisible("#reviewSortTabs")) && (await text(masha, "#reviewSortTabs .active")) === "Новые");
+    check("«Новые»: рецензии от новых к старым", (await cardOrder(masha)) === reviewIdsBy("created_at desc"));
+    await masha.click(".review-card:not(.mine) .review-helpful"); await masha.waitForTimeout(700);
+    check("отметка «полезно» сохранена в базе от своего имени",
+      helpfulCount() === "1" && sql("select count(*) from review_helpful h join profiles p on p.id = h.user_id where p.username = 'masha_k'") === "1");
+    check("кнопка показывает отметку и число", (await text(masha, ".review-card:not(.mine) .review-helpful")) === "✓Полезно1" &&
+      (await masha.getAttribute(".review-card:not(.mine) .review-helpful", "aria-pressed")) === "true");
+    check("лайки не затронуты", (await text(masha, ".review-card:not(.mine) .review-like")) === "♥1");
+    await masha.click('#reviewSortTabs [data-review-sort="helpful"]'); await settle(masha);
+    const helpfulOrder = reviewIdsBy("(select count(*) from review_helpful h where h.review_id = reviews.id) desc, created_at desc");
+    check("«Полезные»: сначала рецензии с большим числом отметок", (await cardOrder(masha)) === helpfulOrder && helpfulOrder !== reviewIdsBy("created_at desc"),
+      `${await cardOrder(masha)} / ${helpfulOrder}`);
+    check("выбранный порядок подсвечен", (await text(masha, "#reviewSortTabs .active")) === "Полезные");
+    await masha.goto(SITE + "#/"); await settle(masha);
+    await masha.goto(SITE + `#/hair/${hairId}`); await settle(masha);
+    check("порядок сохраняется при возврате на страницу", (await text(masha, "#reviewSortTabs .active")) === "Полезные" && (await cardOrder(masha)) === helpfulOrder);
+
+    const helpfulAttacks = await masha.evaluate(async ({ id, gw }) => {
+      const session = JSON.parse(localStorage.getItem("hairrate_session"));
+      const headers = { apikey: "sb_publishable__TEST", Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json", Prefer: "return=representation" };
+      const reviews = await (await fetch(`${gw}/rest/v1/reviews?hairstyle_id=eq.${id}&select=id,author`, { headers })).json();
+      const mine = reviews.find(review => review.author === session.user.id);
+      const other = reviews.find(review => review.author !== session.user.id);
+      const post = body => fetch(`${gw}/rest/v1/review_helpful`, { method: "POST", headers, body: JSON.stringify(body) });
+      const own = await post({ review_id: mine.id });
+      const asOther = await post({ review_id: mine.id, user_id: other.author });
+      const twice = await post({ review_id: other.id });
+      const change = await fetch(`${gw}/rest/v1/review_helpful?review_id=eq.${other.id}`, { method: "PATCH", headers, body: JSON.stringify({ review_id: mine.id }) });
+      const guestMark = await fetch(`${gw}/rest/v1/review_helpful`, { method: "POST", headers: { apikey: "sb_publishable__TEST", "Content-Type": "application/json" }, body: JSON.stringify({ review_id: other.id }) });
+      return { own: own.status, asOther: asOther.status, twice: twice.status, change: change.status, guest: guestMark.status };
+    }, { id: hairId, gw: GW });
+    check("«полезно» своей рецензии через API отклоняется", helpfulAttacks.own === 403, String(helpfulAttacks.own));
+    check("«полезно» от чужого имени через API отклоняется", helpfulAttacks.asOther === 403, String(helpfulAttacks.asOther));
+    check("вторая отметка на ту же рецензию отклоняется", helpfulAttacks.twice === 409, String(helpfulAttacks.twice));
+    check("отметку нельзя переписать на другую рецензию", helpfulAttacks.change === 401 || helpfulAttacks.change === 403, String(helpfulAttacks.change));
+    check("гость не может отметить через API", helpfulAttacks.guest === 401 || helpfulAttacks.guest === 403, String(helpfulAttacks.guest));
+
+    await guest.goto(SITE + `#/hair/${hairId}`); await guest.reload(); await guest.waitForTimeout(900);
+    check("автор видит число отметок у своей рецензии", (await text(guest, ".review-card.mine .review-helpful")) === "+Полезно1" && (await guest.isDisabled(".review-card.mine .review-helpful")));
+    const foreignRemove = await guest.evaluate(async gw => {
+      const session = JSON.parse(localStorage.getItem("hairrate_session"));
+      const headers = { apikey: "sb_publishable__TEST", Authorization: `Bearer ${session.access_token}`, Prefer: "return=representation" };
+      const response = await fetch(`${gw}/rest/v1/review_helpful?user_id=neq.${session.user.id}`, { method: "DELETE", headers });
+      return `${response.status}:${await response.text()}`;
+    }, GW);
+    check("чужую отметку снять нельзя", foreignRemove === "200:[]" && helpfulCount() === "1", foreignRemove);
+    await guest.goto(SITE + "#/reviews"); await settle(guest);
+    check("«Полезно» видно в ленте", (await guest.$$eval("#feedList .review-helpful b", items => items.map(item => item.textContent).join())) === "1");
+
+    await viewer.goto(SITE + `#/hair/${hairId}`); await viewer.reload(); await viewer.waitForTimeout(900);
+    check("гость видит число отметок «полезно»", (await viewer.$$eval(".review-helpful b", items => items.map(item => item.textContent).join())) === "1");
+    await viewer.click(".review-helpful"); await settle(viewer);
+    check("«Полезно» без входа ведёт на вход", (await viewer.evaluate(() => location.hash)) === "#/login" && helpfulCount() === "1");
+
+    for (const colorScheme of ["light", "dark"]) {
+      const phone = await newPage({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, colorScheme });
+      await phone.goto(SITE + `#/hair/${hairId}`); await phone.waitForTimeout(700);
+      const overflow = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+      check(`${colorScheme}: «Полезно» и порядок рецензий на телефоне без горизонтальной прокрутки`,
+        !overflow && (await phone.isVisible("#reviewSortTabs")) && (await phone.isVisible(".review-helpful")), `прокрутка: ${overflow}`);
+      await phone.locator("#reviewSortTabs").scrollIntoViewIfNeeded();
+      await phone.screenshot({ path: path.join(SHOTS, `phone-helpful-${colorScheme}.png`) });
+    }
+
+    await masha.click(".review-card:not(.mine) .review-helpful"); await masha.waitForTimeout(700);
+    check("повторное нажатие снимает отметку", helpfulCount() === "0" && (await text(masha, ".review-card:not(.mine) .review-helpful")) === "+Полезно");
+    await masha.click('#reviewSortTabs [data-review-sort="new"]'); await settle(masha);
+    check("возврат к «Новые»", (await cardOrder(masha)) === reviewIdsBy("created_at desc"));
+
     // ---------- «Новое с прошлого визита» ----------
     console.log("Новое с прошлого визита");
     const hairCreated = Number(sql(`select floor(extract(epoch from created_at) * 1000)::bigint from hairstyles where id = ${hairId}`));
@@ -765,7 +842,14 @@ function check(name, condition, detail = "") {
     check("без таблицы лайков каталог загружается", (await legacy.$$eval(".hair-card", cards => cards.length)) >= 1);
     sql("notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);
     await legacy.goto(SITE + "#/reviews"); await legacy.reload(); await legacy.waitForTimeout(900);
-    check("без таблицы лайков лента без кнопок лайка", (await legacy.$$eval("#feedList .review-card", cards => cards.length)) >= 1 && (await legacy.$$eval(".review-like", items => items.length)) === 0);
+    check("без таблицы лайков лента без кнопок лайка", (await legacy.$$eval("#feedList .review-card", cards => cards.length)) >= 1 && (await legacy.$$eval(".review-like:not(.review-helpful)", items => items.length)) === 0);
+    check("без таблицы лайков кнопка «Полезно» остаётся", (await legacy.$$eval("#feedList .review-helpful", items => items.length)) >= 1);
+    sql("drop table review_helpful; notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);
+    const legacyHair = sql("select hairstyle_id from reviews group by 1 order by count(*) desc limit 1");
+    await legacy.goto(SITE + `#/hair/${legacyHair}`); await legacy.reload(); await legacy.waitForTimeout(900);
+    check("без таблицы «Полезно» страница прически открывается без кнопок и переключателя",
+      (await legacy.$$eval("#reviewsList .review-card", cards => cards.length)) >= 1 &&
+      (await legacy.$$eval(".review-helpful", items => items.length)) === 0 && !(await legacy.isVisible("#reviewSortTabs")));
     await legacy.goto(SITE + "#/stats"); await settle(legacy);
     check("старая схема: статистика открывается", (await legacy.$$eval("#verdictStats .verdict-stat", items => items.length)) === 6);
     sql("drop function duel_standings(); drop table duel_votes; notify pgrst, 'reload schema'"); await legacy.waitForTimeout(1000);

@@ -1156,6 +1156,10 @@ h3 { margin-top: 4px; font-size: 19px; }
 .review-like:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
 .review-like.active { border-color: var(--ink); color: var(--ink); }
 .review-like:disabled { cursor: default; opacity: .7; }
+.review-helpful > span { font-weight: 700; }
+
+/* Порядок рецензий на странице прически */
+.review-sort { margin-bottom: 14px; }
 
 .new-mark {
   display: inline-flex;
