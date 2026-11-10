@@ -136,6 +136,18 @@ create table if not exists public.review_likes (
 );
 create index if not exists review_likes_user_idx on public.review_likes (user_id);
 
+-- ---------- «Полезно» на рецензиях ----------
+-- Отдельно от лайков: «нравится» — про симпатию, «полезно» — помогла ли рецензия разобраться.
+-- Одна отметка от человека на рецензию, свою рецензию отметить нельзя, отметку можно снять.
+-- По числу отметок сайт сортирует рецензии («Полезные»). user_id → auth.users, как в review_likes.
+create table if not exists public.review_helpful (
+  review_id bigint not null references public.reviews (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (review_id, user_id)
+);
+create index if not exists review_helpful_user_idx on public.review_helpful (user_id);
+
 -- ---------- Дуэль ----------
 -- Участнику показывают две прически, он выбирает лучшую. Один голос на пару от человека
 -- (в любом порядке), голос нельзя изменить или удалить. Кто как голосовал, видит только он сам:
@@ -179,6 +191,9 @@ grant insert, delete on public.hairstyles, public.reviews to authenticated;
 grant select on public.review_likes to anon, authenticated;
 grant insert, delete on public.review_likes to authenticated;
 revoke update on public.review_likes from anon, authenticated;
+grant select on public.review_helpful to anon, authenticated;
+grant insert, delete on public.review_helpful to authenticated;
+revoke update on public.review_helpful from anon, authenticated;
 -- Дуэль: гость голоса не видит (итоги — через duel_standings), участник пишет только winner и loser
 revoke select, insert, update, delete, truncate on public.duel_votes from anon, authenticated;
 grant select on public.duel_votes to authenticated;
@@ -193,6 +208,7 @@ alter table public.profiles enable row level security;
 alter table public.hairstyles enable row level security;
 alter table public.reviews enable row level security;
 alter table public.review_likes enable row level security;
+alter table public.review_helpful enable row level security;
 alter table public.duel_votes enable row level security;
 
 -- Смотреть каталог могут все, даже без входа
@@ -271,6 +287,27 @@ create policy "review_likes: insert own" on public.review_likes
 
 drop policy if exists "review_likes: delete own" on public.review_likes;
 create policy "review_likes: delete own" on public.review_likes
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
+
+-- «Полезно»: видят все; отмечать можно только от своего имени и не свою рецензию; снимать — только свои
+drop policy if exists "review_helpful: read" on public.review_helpful;
+create policy "review_helpful: read" on public.review_helpful
+  for select to anon, authenticated using (true);
+
+drop policy if exists "review_helpful: insert own" on public.review_helpful;
+create policy "review_helpful: insert own" on public.review_helpful
+  for insert to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and not exists (
+      select 1 from public.reviews r
+      where r.id = review_id and r.author = (select auth.uid())
+    )
+  );
+
+drop policy if exists "review_helpful: delete own" on public.review_helpful;
+create policy "review_helpful: delete own" on public.review_helpful
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
